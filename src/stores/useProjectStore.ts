@@ -1,85 +1,43 @@
 import { create } from 'zustand';
-import type { Project, Track, AudioClip, MidiClip, MidiNote, PluginInstance, TrackType } from '../lib/types';
+import type { Project, Track, AudioClip, MidiClip, MidiNote, PluginInstance, TrackType, Asset } from '../lib/types';
 import { audioEngine } from '../audio/AudioEngine';
 import { synthEngine } from '../audio/SynthEngine';
+import { createEmptyProject, createDemoProject } from '../lib/defaultProject';
+import { saveProject, loadProject, saveAutosave, uploadAudioAsset, isSupabaseConfigured } from '../lib/projectService';
+import { exportAndDownload } from '../audio/ExportEngine';
+import { broadcastClipMove, subscribeToProject } from '../lib/realtimeSync';
+import { useAuthStore } from './useAuthStore';
 
-// Default project with multiple tracks for realistic demo
-const defaultProject: Project = {
-  id: 'local-demo',
-  name: 'My First Song',
-  tempo: 120,
-  timeSignature: [4, 4],
-  tracks: [
-    {
-      id: 't1',
-      type: 'audio',
-      name: '808 Hats',
-      gain: 0.85,
-      pan: 0,
-      muted: false,
-      soloed: false,
-      inserts: [
-        // Demo insert to show the new signal chain immediately
-        { id: 'demo-eq', type: 'eq3band', params: { lowGain: 2, midGain: -1.5, highGain: 1 }, bypass: false }
-      ],
-      audioClips: [
-        { id: 'c1', storagePath: 'demo:808hats', startBeat: 0, durationBeats: 4, offsetBeats: 0 },
-        { id: 'c2', storagePath: 'demo:808hats', startBeat: 4, durationBeats: 4, offsetBeats: 0 },
-      ],
-    },
-    {
-      id: 't2',
-      type: 'audio',
-      name: 'Kick',
-      gain: 0.92,
-      pan: 0,
-      muted: false,
-      soloed: false,
-      inserts: [],
-      audioClips: [
-        { id: 'c3', storagePath: 'demo:kick', startBeat: 0, durationBeats: 1, offsetBeats: 0 },
-        { id: 'c4', storagePath: 'demo:kick', startBeat: 4, durationBeats: 1, offsetBeats: 0 },
-      ],
-    },
-    {
-      id: 't3',
-      type: 'audio',
-      name: 'Big Compressed Drums',
-      gain: 0.78,
-      pan: 0,
-      muted: false,
-      soloed: false,
-      inserts: [],
-      audioClips: [
-        { id: 'c5', storagePath: 'demo:drums', startBeat: 0, durationBeats: 8, offsetBeats: 0 },
-      ],
-    },
-    {
-      id: 't4',
-      type: 'instrument',
-      name: 'Moog Bass',
-      gain: 0.82,
-      pan: -0.08,
-      muted: false,
-      soloed: false,
-      inserts: [],
-      audioClips: [],
-      midiClips: [
-        {
-          id: 'm1',
-          startBeat: 0,
-          durationBeats: 8,
-          notes: [
-            { id: 'n1', pitch: 48, startBeat: 0, durationBeats: 1.5, velocity: 95 },
-            { id: 'n2', pitch: 55, startBeat: 2, durationBeats: 1, velocity: 80 },
-            { id: 'n3', pitch: 60, startBeat: 4, durationBeats: 2, velocity: 100 },
-            { id: 'n4', pitch: 52, startBeat: 6, durationBeats: 1.5, velocity: 85 },
-          ],
-        },
-      ],
-    },
-  ],
-};
+const initialProject = loadProjectLocalSafe();
+
+function loadProjectLocalSafe(): Project {
+  try {
+    const raw = localStorage.getItem('jaydee:project') || localStorage.getItem('jaydee:autosave');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return (parsed.project ?? parsed) as Project;
+    }
+  } catch { /* use empty */ }
+  return createEmptyProject();
+}
+
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let realtimeUnsub: (() => void) | null = null;
+
+function scheduleAutosave(project: Project) {
+  if (autosaveTimer) clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => saveAutosave(project), 1500);
+}
+
+async function resolveClipAudioId(storagePath: string): Promise<string> {
+  if (storagePath.startsWith('local:')) return storagePath.slice(6);
+  if (storagePath.startsWith('demo:')) return storagePath;
+  if (storagePath.startsWith('storage:')) {
+    const resolved = await audioEngine.ensureStorageAudio?.(storagePath);
+    return resolved || storagePath;
+  }
+  return storagePath;
+}
 
 interface ProjectState {
   project: Project;
@@ -97,21 +55,46 @@ interface ProjectState {
   // Tracks & Clips
   addTrack: (track: Track) => void;
   addTrackOfType: (type: TrackType, name?: string) => void;
+  removeTrack: (trackId: string) => void;
+  reorderTracks: (oldIndex: number, newIndex: number) => void;
+  toggleSidechain: (trackId: string) => void;
+  setSidechainParams: (trackId: string, params: Partial<NonNullable<Track['sidechain']>>) => void;
   updateTrack: (trackId: string, changes: Partial<Track>) => void;
+  updateClipFade: (trackId: string, clipId: string, updates: Partial<Pick<AudioClip, 'fadeInMs' | 'fadeOutMs' | 'fadeInCurve' | 'fadeOutCurve' | 'fadeInPoints' | 'fadeOutPoints'>>) => void;
   toggleMute: (trackId: string) => void;
   toggleSolo: (trackId: string) => void;
   addAudioClip: (trackId: string, file: File) => Promise<void>;
   addTestTone: (trackId: string) => Promise<void>;
 
+  // Asset Pool
+  assets: Asset[];
+  addAsset: (file: File) => Promise<void>;
+  removeAsset: (assetId: string) => void;
+  addClipFromAsset: (trackId: string, assetId: string, startBeat: number) => Promise<void>;
+
   // Mix / Inserts (signal chain)
   addInsert: (trackId: string, plugin: Omit<PluginInstance, 'id'>) => void;
   updateInsert: (trackId: string, insertId: string, params: Record<string, number>) => void;
   removeInsert: (trackId: string, insertId: string) => void;
+  toggleInsertBypass: (trackId: string, insertId: string) => void;
   reorderInsert: (trackId: string, fromIndex: number, toIndex: number) => void;
   loadDemoMixChain: () => void;
+  loadDemoProject: () => void;
+  seedDemoAssets: () => void;
+  loadSimpleDrumBeat: () => void;
+  newProject: () => void;
+  saveProjectNow: (userId?: string | null) => Promise<'local' | 'cloud'>;
+  loadSavedProject: (userId?: string | null) => Promise<boolean>;
+  toggleAutomationWrite: (trackId: string) => void;
+  initRealtime: (userId: string) => void;
   setMasterGain: (gain: number) => void;
   setTrackGain: (trackId: string, gain: number) => void;
   setTrackPan: (trackId: string, pan: number) => void;
+  autoCrossfade: (trackId: string) => void;
+
+  // Metronome
+  metronomeEnabled: boolean;
+  toggleMetronome: () => void;
 
   // Metering (polled from UI)
   getTrackMeter: (trackId: string) => { peak: number; rms: number };
@@ -158,9 +141,15 @@ interface ProjectState {
   // Undo / Redo
   undo: () => void;
   redo: () => void;
+
+  // Export (Phase 6)
+  exportProject: () => Promise<void>;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => {
+  // Note: demo sounds and FX preload are now lazy (on first play/gesture) to avoid AudioContext autoplay warnings.
+  // They will be triggered from play() or explicit demo load buttons.
+
   audioEngine.subscribeToPosition((beat) => {
     let nextBeat = Math.max(0, beat);
     const { loopEnabled, loopStart, loopEnd, isPlaying } = get();
@@ -182,15 +171,37 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     set({ currentBeat: nextBeat });
   });
 
+  function getAutomatedValue(track: Track, param: 'gain' | 'pan', beat: number): number | undefined {
+    const pts = track.automation?.[param];
+    if (!pts || pts.length === 0) return undefined;
+
+    let prev = pts[0];
+    let next = pts[pts.length - 1];
+
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i].beat <= beat) prev = pts[i];
+      if (pts[i].beat >= beat) {
+        next = pts[i];
+        break;
+      }
+    }
+
+    if (prev.beat === next.beat) return prev.value;
+    const t = (beat - prev.beat) / (next.beat - prev.beat);
+    return prev.value + (next.value - prev.value) * Math.max(0, Math.min(1, t));
+  }
+
   const getEffectiveGain = (track: Track): number => {
     const latest = get().project.tracks.find(t => t.id === track.id) || track;
     if (latest.muted) return 0;
     const anySolo = get().project.tracks.some(t => t.soloed);
     if (anySolo && !latest.soloed) return 0;
-    return Math.max(0, Math.min(2, latest.gain));
+
+    const autoGain = getAutomatedValue(latest, 'gain', get().currentBeat);
+    return Math.max(0, Math.min(2, autoGain ?? latest.gain));
   };
 
-  const refreshPlayback = () => {
+  const refreshPlayback = async () => {
     const { isPlaying, project } = get();
     if (!isPlaying) return;
 
@@ -206,18 +217,31 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       audioEngine.setTrackMute?.(t.id, t.muted);
     });
 
-    project.tracks.forEach((track) => {
-      if (track.type !== 'audio' || !track.audioClips) return;
+    for (const track of project.tracks) {
+      if (track.type !== 'audio' || !track.audioClips) continue;
       const eff = getEffectiveGain(track);
-      track.audioClips.forEach((clip) => {
+      for (const clip of track.audioClips) {
         if (clip.storagePath.startsWith('local:')) {
           const audioId = clip.storagePath.replace('local:', '');
-          audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id);
-        } else if (clip.storagePath.startsWith('demo:')) {
-          audioEngine.scheduleClip(clip.storagePath, clip.startBeat, clip.offsetBeats, eff, track.id);
+          audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id, {
+            fadeInMs: clip.fadeInMs || 0,
+            fadeOutMs: clip.fadeOutMs || 0,
+            fadeInCurve: clip.fadeInCurve || 'linear',
+            fadeOutCurve: clip.fadeOutCurve || 'linear'
+          });
+        } else if (clip.storagePath.startsWith('demo:') || clip.storagePath.startsWith('storage:')) {
+          const audioId = await resolveClipAudioId(clip.storagePath);
+          if (audioId) {
+            audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id, {
+              fadeInMs: clip.fadeInMs || 0,
+              fadeOutMs: clip.fadeOutMs || 0,
+              fadeInCurve: clip.fadeInCurve || 'linear',
+              fadeOutCurve: clip.fadeOutCurve || 'linear'
+            });
+          }
         }
-      });
-    });
+      }
+    }
 
     // MIDI reschedule on refresh
     const psb = audioEngine.getPlayStartBeat?.() ?? get().currentBeat;
@@ -238,16 +262,31 @@ export const useProjectStore = create<ProjectState>((set, get) => {
   };
 
   return {
-    project: defaultProject,
+    project: initialProject,
     isPlaying: false,
     currentBeat: 0,
     selectedClipIds: [],
     history: [],
     future: [],
-    quantize: 1 / 4,
+    quantize: 1, // 1 beat = "1/4" (quarter note) by default in 4/4; value is always in beats
     setQuantize: (q) => set({ quantize: q }),
     isQuantizeOn: true,
     toggleQuantize: () => set((state) => ({ isQuantizeOn: !state.isQuantizeOn })),
+
+    assets: [],
+
+    metronomeEnabled: false,
+    toggleMetronome: () => {
+      set((state) => ({ metronomeEnabled: !state.metronomeEnabled }));
+      const newState = !get().metronomeEnabled;
+      audioEngine.setMetronome(newState);
+      if (get().isPlaying && newState) {
+        const curr = get().currentBeat;
+        for (let b = Math.ceil(curr); b < curr + 64; b++) {
+          (audioEngine as any).scheduleMetronomeClick?.(b);
+        }
+      }
+    },
 
     // Loop region (for loop playback and region highlight in arrange)
     loopEnabled: false,
@@ -270,6 +309,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     togglePlay: async () => {
+      audioEngine.setMetronome(get().metronomeEnabled);
       const st = get();
       let startBeat = st.currentBeat;
 
@@ -294,18 +334,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         });
 
         // Schedule audio clips
-        st.project.tracks.forEach((track) => {
-          if (track.type !== 'audio' || !track.audioClips) return;
+        for (const track of st.project.tracks) {
+          if (track.type !== 'audio' || !track.audioClips) continue;
           const eff = getEffectiveGain(track);
-          track.audioClips.forEach((clip) => {
-            if (clip.storagePath.startsWith('local:')) {
-              const audioId = clip.storagePath.replace('local:', '');
-              audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id);
-            } else if (clip.storagePath.startsWith('demo:')) {
-              audioEngine.scheduleClip(clip.storagePath, clip.startBeat, clip.offsetBeats, eff, track.id);
+          for (const clip of track.audioClips) {
+            const audioId = await resolveClipAudioId(clip.storagePath);
+            if (audioId) {
+              audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id, {
+                fadeInMs: clip.fadeInMs || 0,
+                fadeOutMs: clip.fadeOutMs || 0,
+                fadeInCurve: clip.fadeInCurve || 'linear',
+                fadeOutCurve: clip.fadeOutCurve || 'linear'
+              });
             }
-          });
-        });
+          }
+        }
 
         // Schedule MIDI notes from instrument/midi tracks
         const playStartBeat = audioEngine.getPlayStartBeat?.() ?? get().currentBeat;
@@ -365,9 +408,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         pan: 0,
         muted: false,
         soloed: false,
-        inserts: [],
+        automationWrite: false,
         audioClips: type === 'audio' ? [] : undefined,
         midiClips: (type === 'instrument' || type === 'midi') ? [] : undefined,
+        inserts: type === 'instrument' ? [
+          { id: 'inst-eq', type: 'eq3band', params: { lowGain: 0, midGain: 1, highGain: -1 } },
+          { id: 'inst-drive', type: 'drive', params: { amount: 1.5 } }
+        ] : [],
       };
       set((state) => ({
         project: { ...state.project, tracks: [...state.project.tracks, newTrack] }
@@ -376,6 +423,45 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       // Prepare channel strip immediately (lazy safe)
       audioEngine.ensureChannel?.(newTrack.id);
       audioEngine.rebuildTrackInserts?.(newTrack.id, []);
+    },
+
+    removeTrack: (trackId) => {
+      get().pushHistory();
+      set((state) => ({
+        project: {
+          ...state.project,
+          tracks: state.project.tracks.filter(t => t.id !== trackId)
+        },
+        selectedClipIds: [] // clear selection for simplicity
+      }));
+    },
+
+    reorderTracks: (oldIndex, newIndex) => {
+      get().pushHistory();
+      set((state) => {
+        const tracks = [...state.project.tracks];
+        const [moved] = tracks.splice(oldIndex, 1);
+        tracks.splice(newIndex, 0, moved);
+        return {
+          project: { ...state.project, tracks }
+        };
+      });
+    },
+
+    toggleSidechain: (trackId) => {
+      const track = get().project.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      const current = track.sidechain || { enabled: false, threshold: 0.5, reduction: 0.5, releaseMs: 150 };
+      get().updateTrack(trackId, { sidechain: { ...current, enabled: !current.enabled } });
+    },
+
+    setSidechainParams: (trackId, params) => {
+      const track = get().project.tracks.find(t => t.id === trackId);
+      if (!track) return;
+      const current = track.sidechain || { enabled: true, threshold: 0.5, reduction: 0.5, releaseMs: 150 };
+      get().updateTrack(trackId, { sidechain: { ...current, ...params } });
+      // If playing, reschedule ducks
+      if (get().isPlaying) get().refreshPlayback();
     },
 
     updateTrack: (trackId, changes) => {
@@ -403,6 +489,48 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
     },
 
+    updateClipFade: (trackId, clipId, updates) => {
+      set((state) => {
+        const tracks = state.project.tracks.map(track => {
+          if (track.id !== trackId || !track.audioClips) return track;
+          return {
+            ...track,
+            audioClips: track.audioClips.map(clip =>
+              clip.id === clipId ? { ...clip, ...updates } as AudioClip : clip
+            )
+          };
+        });
+        return { project: { ...state.project, tracks } };
+      });
+
+      // If playing, reschedule to apply new fades
+      if (get().isPlaying) {
+        get().refreshPlayback();
+      }
+    },
+
+    // Auto crossfade for overlapping audio clips on same track (Cubase like)
+    autoCrossfade: (trackId: string) => {
+      const track = get().project.tracks.find(t => t.id === trackId);
+      if (!track || !track.audioClips || track.audioClips.length < 2) return;
+
+      const clips = [...track.audioClips].sort((a, b) => a.startBeat - b.startBeat);
+      for (let i = 0; i < clips.length - 1; i++) {
+        const a = clips[i];
+        const b = clips[i + 1];
+        const aEnd = a.startBeat + a.durationBeats;
+        if (b.startBeat < aEnd) {
+          const overlapBeats = aEnd - b.startBeat;
+          const msPerBeat = 60000 / get().project.tempo;
+          const overlapMs = overlapBeats * msPerBeat;
+          // Set fadeOut on a and fadeIn on b to overlap
+          get().updateClipFade(trackId, a.id, { fadeOutMs: Math.round(overlapMs), fadeOutCurve: 's-curve' });
+          get().updateClipFade(trackId, b.id, { fadeInMs: Math.round(overlapMs), fadeInCurve: 's-curve' });
+        }
+      }
+      if (get().isPlaying) get().refreshPlayback();
+    },
+
     toggleMute: (trackId) => {
       const track = get().project.tracks.find(t => t.id === trackId);
       if (!track) return;
@@ -421,11 +549,51 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     setTrackGain: (trackId, gain) => {
       const clamped = Math.max(0, Math.min(2, gain));
+      const st = get();
+      const track = st.project.tracks.find(t => t.id === trackId);
+
+      if (track?.automationWrite && st.isPlaying) {
+        const beat = st.currentBeat;
+        get().pushHistory();
+        // Record automation point
+        set((state) => {
+          const tracks = state.project.tracks.map(t => {
+            if (t.id !== trackId) return t;
+            const auto = t.automation || {};
+            const pts = [...(auto.gain || [])];
+            // Remove points very close to current beat for clean overwrite
+            const filtered = pts.filter(p => Math.abs(p.beat - beat) > 0.01);
+            filtered.push({ beat, value: clamped });
+            filtered.sort((a, b) => a.beat - b.beat);
+            return { ...t, automation: { ...auto, gain: filtered } };
+          });
+          return { project: { ...state.project, tracks } };
+        });
+      }
+
       get().updateTrack(trackId, { gain: clamped });
     },
 
     setTrackPan: (trackId, pan) => {
       const clamped = Math.max(-1, Math.min(1, pan));
+      const st = get();
+      const track = st.project.tracks.find(t => t.id === trackId);
+
+      if (track?.automationWrite && st.isPlaying) {
+        const beat = st.currentBeat;
+        set((state) => {
+          const tracks = state.project.tracks.map(t => {
+            if (t.id !== trackId) return t;
+            const auto = t.automation || {};
+            const pts = [...(auto.pan || [])].filter(p => Math.abs(p.beat - beat) > 0.01);
+            pts.push({ beat, value: clamped });
+            pts.sort((a, b) => a.beat - b.beat);
+            return { ...t, automation: { ...auto, pan: pts } };
+          });
+          return { project: { ...state.project, tracks } };
+        });
+      }
+
       get().updateTrack(trackId, { pan: clamped });
     },
 
@@ -509,6 +677,26 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
     },
 
+    toggleInsertBypass: (trackId, insertId) => {
+      set((state) => {
+        const tracks = state.project.tracks.map(t => {
+          if (t.id !== trackId) return t;
+          return {
+            ...t,
+            inserts: t.inserts.map(ins =>
+              ins.id === insertId ? { ...ins, bypass: !ins.bypass } : ins
+            )
+          };
+        });
+        return { project: { ...state.project, tracks } };
+      });
+
+      const track = get().project.tracks.find(t => t.id === trackId);
+      if (track) {
+        audioEngine.rebuildTrackInserts?.(trackId, track.inserts);
+      }
+    },
+
     reorderInsert: (trackId, fromIndex, toIndex) => {
       set((state) => {
         const tracks = state.project.tracks.map(t => {
@@ -568,6 +756,210 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         audioEngine.ensureChannel?.(t.id);
         audioEngine.rebuildTrackInserts?.(t.id, t.inserts);
       });
+      scheduleAutosave(get().project);
+    },
+
+    loadDemoProject: () => {
+      get().pushHistory();
+      const demo = createDemoProject();
+      set({ project: demo, currentBeat: 0, selectedClipIds: [] });
+      audioEngine.ensureDemoSounds?.();
+      demo.tracks.forEach(t => {
+        audioEngine.ensureChannel?.(t.id);
+        audioEngine.rebuildTrackInserts?.(t.id, t.inserts || []);
+      });
+      scheduleAutosave(demo);
+    },
+
+    seedDemoAssets: () => {
+      audioEngine.ensureDemoSounds?.();
+      const current = get().assets;
+      const wanted = [
+        { id: 'd-kick', name: 'Kick', storagePath: 'demo:kick', duration: 0.65 },
+        { id: 'd-snare', name: 'Snare', storagePath: 'demo:snare', duration: 0.55 },
+        { id: 'd-hihat', name: 'Closed Hat', storagePath: 'demo:hihat', duration: 0.28 },
+        { id: 'd-crash', name: 'Crash', storagePath: 'demo:crash', duration: 1.6 },
+      ];
+      const toAdd = wanted.filter(w => !current.some(a => a.storagePath === w.storagePath));
+      if (toAdd.length > 0) {
+        set((state) => ({ assets: [...state.assets, ...toAdd] }));
+
+      }
+    },
+
+    loadSimpleDrumBeat: () => {
+      get().pushHistory();
+      get().seedDemoAssets();
+
+      // Create or reuse drum tracks
+      let state = get();
+      let kickTrack = state.project.tracks.find(t => t.name.toLowerCase().includes('kick') || (t.type === 'audio' && t.audioClips?.some(c => c.storagePath.includes('kick'))));
+      let snareTrack = state.project.tracks.find(t => t.name.toLowerCase().includes('snare'));
+      let hatTrack = state.project.tracks.find(t => t.name.toLowerCase().includes('hat'));
+      let crashTrack = state.project.tracks.find(t => t.name.toLowerCase().includes('crash'));
+
+      const makeTrack = (name: string) => {
+        const tr: Track = {
+          id: crypto.randomUUID(),
+          type: 'audio',
+          name,
+          gain: 0.9,
+          pan: 0,
+          muted: false,
+          soloed: false,
+          inserts: [],
+          audioClips: [],
+        };
+        return tr;
+      };
+
+      const tracksToAdd: Track[] = [];
+      if (!kickTrack) { kickTrack = makeTrack('Kick'); tracksToAdd.push(kickTrack); }
+      if (!snareTrack) { snareTrack = makeTrack('Snare'); tracksToAdd.push(snareTrack); }
+      if (!hatTrack) { hatTrack = makeTrack('Closed Hat'); tracksToAdd.push(hatTrack); }
+      if (!crashTrack) { crashTrack = makeTrack('Crash'); tracksToAdd.push(crashTrack); }
+
+      if (tracksToAdd.length) {
+        set((s) => ({ project: { ...s.project, tracks: [...s.project.tracks, ...tracksToAdd] } }));
+      }
+
+      // Clear old demo clips on these for clean beat
+      const ids = [kickTrack.id, snareTrack.id, hatTrack.id, crashTrack.id];
+      set((s) => {
+        const newTracks = s.project.tracks.map(tr =>
+          ids.includes(tr.id) ? { ...tr, audioClips: [] } : tr
+        );
+        return { project: { ...s.project, tracks: newTracks } };
+      });
+
+      // Place a simple 8-beat groove (at 120bpm)
+      const assets = get().assets;
+      const findAsset = (name: string) => assets.find(a => a.name.toLowerCase().includes(name.toLowerCase()) || a.storagePath.includes(name.toLowerCase()));
+
+      const kickA = findAsset('kick') || assets.find(a => a.storagePath === 'demo:kick');
+      const snareA = findAsset('snare') || assets.find(a => a.storagePath === 'demo:snare');
+      const hatA = findAsset('hat') || assets.find(a => a.storagePath === 'demo:hihat');
+      const crashA = findAsset('crash') || assets.find(a => a.storagePath === 'demo:crash');
+
+      const beat = get().currentBeat;
+      const add = (trackId: string, asset: any, start: number) => {
+        if (!asset || !trackId) return;
+        const durBeats = (asset.duration * get().project.tempo) / 60;
+        const clip: AudioClip = {
+          id: crypto.randomUUID(),
+          storagePath: asset.storagePath,
+          startBeat: Math.max(0, beat + start),
+          durationBeats: Math.max(0.25, durBeats * 0.95),
+          offsetBeats: 0,
+          fadeInMs: 5, fadeOutMs: 60, fadeInCurve: 'linear', fadeOutCurve: 'exp'
+        };
+        set((s) => ({
+          project: {
+            ...s.project,
+            tracks: s.project.tracks.map(t => t.id === trackId ? { ...t, audioClips: [...(t.audioClips || []), clip] } : t)
+          }
+        }));
+      };
+
+      // Groove
+      if (kickTrack && kickA) { add(kickTrack.id, kickA, 0); add(kickTrack.id, kickA, 2); add(kickTrack.id, kickA, 4); add(kickTrack.id, kickA, 5.75); }
+      if (snareTrack && snareA) { add(snareTrack.id, snareA, 2); add(snareTrack.id, snareA, 6); }
+      if (hatTrack && hatA) {
+        for (let i = 0; i < 16; i++) {
+          add(hatTrack.id, hatA, i * 0.5);
+        }
+      }
+      if (crashTrack && crashA) { add(crashTrack.id, crashA, 0); }
+
+
+
+      // Also ensure an instrument track with a short MIDI phrase for piano roll demo
+      let inst = get().project.tracks.find(t => t.type === 'instrument' || t.type === 'midi');
+      if (!inst) {
+        get().addTrackOfType('instrument', 'Bassline');
+        inst = get().project.tracks.find(t => t.type === 'instrument');
+      }
+      if (inst) {
+        const ph = Math.floor(get().currentBeat);
+        get().addMidiClip(inst.id, ph, 8);
+        const clips = get().project.tracks.find(t => t.id === inst!.id)?.midiClips || [];
+        const last = clips[clips.length-1];
+        if (last) {
+          // add a few notes
+          get().addNote(last.id, 36, 0, 0.75, 100);
+          get().addNote(last.id, 43, 2, 0.5, 85);
+          get().addNote(last.id, 48, 4, 1.25, 95);
+        }
+
+      }
+    },
+
+    newProject: () => {
+      get().pushHistory();
+      const fresh = createEmptyProject();
+      set({ project: fresh, currentBeat: 0, selectedClipIds: [], history: [], future: [] });
+      scheduleAutosave(fresh);
+    },
+
+    saveProjectNow: async (userId) => {
+      const mode = await saveProject(get().project, userId);
+      return mode;
+    },
+
+    loadSavedProject: async (userId) => {
+      const { project: current } = get();
+      const loaded = await loadProject(current.id, userId);
+      if (!loaded) return false;
+      set({ project: loaded, currentBeat: 0, selectedClipIds: [] });
+      loaded.tracks.forEach(t => {
+        audioEngine.ensureChannel?.(t.id);
+        audioEngine.rebuildTrackInserts?.(t.id, t.inserts || []);
+      });
+      return true;
+    },
+
+    toggleAutomationWrite: (trackId) => {
+      set((state) => ({
+        project: {
+          ...state.project,
+          tracks: state.project.tracks.map((t) =>
+            t.id === trackId ? { ...t, automationWrite: !t.automationWrite } : t
+          ),
+        },
+      }));
+    },
+
+    initRealtime: (userId) => {
+      realtimeUnsub?.();
+      const projectId = get().project.id;
+      realtimeUnsub = subscribeToProject(projectId, userId, (evt) => {
+        const { trackId, clipId, newStartBeat } = evt;
+        set((state) => ({
+          project: {
+            ...state.project,
+            tracks: state.project.tracks.map((track) => {
+              if (track.id !== trackId) return track;
+              if (track.audioClips?.some(c => c.id === clipId)) {
+                return {
+                  ...track,
+                  audioClips: track.audioClips.map(c =>
+                    c.id === clipId ? { ...c, startBeat: newStartBeat } : c
+                  ),
+                };
+              }
+              if (track.midiClips?.some(c => c.id === clipId)) {
+                return {
+                  ...track,
+                  midiClips: track.midiClips.map(c =>
+                    c.id === clipId ? { ...c, startBeat: newStartBeat } : c
+                  ),
+                };
+              }
+              return track;
+            }),
+          },
+        }));
+      });
     },
 
     getTrackMeter: (trackId) => {
@@ -582,12 +974,18 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       const loaded = await audioEngine.loadAudio(file);
       const tempo = get().project.tempo;
 
-      const newClip: AudioClip = {
+      const sourceDurBeats = (loaded.duration * tempo) / 60;
+      const newClip: AudioClip & { sourceDurationBeats?: number } = {
         id: crypto.randomUUID(),
         storagePath: `local:${loaded.id}`,
         startBeat: 0,
-        durationBeats: (loaded.duration * tempo) / 60,
+        durationBeats: sourceDurBeats,
         offsetBeats: 0,
+        sourceDurationBeats: sourceDurBeats,
+        fadeInMs: 40,  // default small fade for nice UX
+        fadeOutMs: 80,
+        fadeInCurve: 'linear',
+        fadeOutCurve: 's-curve',
       };
 
       set((state) => {
@@ -603,16 +1001,22 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       if (get().isPlaying) {
         const tr = get().project.tracks.find(t => t.id === trackId);
         const eff = tr ? getEffectiveGain(tr) : 0.85;
-        audioEngine.scheduleClip(loaded.id, newClip.startBeat, newClip.offsetBeats, eff, trackId);
+        audioEngine.scheduleClip(loaded.id, newClip.startBeat, newClip.offsetBeats, eff, trackId, {
+          fadeInMs: newClip.fadeInMs || 0,
+          fadeOutMs: newClip.fadeOutMs || 0,
+          fadeInCurve: newClip.fadeInCurve || 'linear',
+          fadeOutCurve: newClip.fadeOutCurve || 'linear'
+        });
       }
     },
 
     addTestTone: async (trackId: string) => {
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const sampleRate = audioContext.sampleRate;
+      // Use main engine context for buffer creation (creation is allowed; resume is handled on gesture)
+      const ctx = (audioEngine as any).getContext ? (audioEngine as any).getContext() : new (window.AudioContext || (window as any).webkitAudioContext)();
+      const sampleRate = ctx.sampleRate;
       const duration = 0.8;
       const length = Math.floor(sampleRate * duration);
-      const buffer = audioContext.createBuffer(1, length, sampleRate);
+      const buffer = ctx.createBuffer(1, length, sampleRate);
       const data = buffer.getChannelData(0);
 
       for (let i = 0; i < length; i++) {
@@ -624,12 +1028,18 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       audioEngine.registerBuffer(id, 'Test Tone', buffer, duration);
 
       const tempo = get().project.tempo;
-      const newClip: AudioClip = {
+      const sourceDurBeats = (duration * tempo) / 60;
+      const newClip: AudioClip & { sourceDurationBeats?: number } = {
         id: crypto.randomUUID(),
         storagePath: `local:${id}`,
         startBeat: 0,
-        durationBeats: (duration * tempo) / 60,
+        durationBeats: sourceDurBeats,
         offsetBeats: 0,
+        sourceDurationBeats: sourceDurBeats,
+        fadeInMs: 0,
+        fadeOutMs: 0,
+        fadeInCurve: 'linear',
+        fadeOutCurve: 'linear',
       };
 
       set((state) => {
@@ -645,8 +1055,100 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       if (get().isPlaying) {
         const tr = get().project.tracks.find(t => t.id === trackId);
         const eff = tr ? getEffectiveGain(tr) : 0.85;
-        audioEngine.scheduleClip(id, newClip.startBeat, newClip.offsetBeats, eff, trackId);
+        audioEngine.scheduleClip(id, newClip.startBeat, newClip.offsetBeats, eff, trackId, {
+          fadeInMs: newClip.fadeInMs || 0,
+          fadeOutMs: newClip.fadeOutMs || 0,
+          fadeInCurve: newClip.fadeInCurve || 'linear',
+          fadeOutCurve: newClip.fadeOutCurve || 'linear'
+        });
       }
+    },
+
+    // Asset Pool
+    addAsset: async (file) => {
+      const userId = useAuthStore.getState().user?.id;
+      let storagePath: string;
+      let duration: number;
+
+      if (isSupabaseConfigured && userId) {
+        try {
+          const objectPath = await uploadAudioAsset(file, userId);
+          storagePath = `storage:${objectPath}`;
+
+          // Load locally for immediate use + cache
+          const loaded = await audioEngine.loadAudio(file);
+          duration = loaded.duration;
+          audioEngine.registerBuffer?.(objectPath, file.name, loaded.buffer, duration);
+        } catch (e) {
+          console.warn('[Storage] upload failed, local fallback', e);
+          const loaded = await audioEngine.loadAudio(file);
+          storagePath = `local:${loaded.id}`;
+          duration = loaded.duration;
+        }
+      } else {
+        const loaded = await audioEngine.loadAudio(file);
+        storagePath = `local:${loaded.id}`;
+        duration = loaded.duration;
+      }
+
+      const newAsset: Asset = {
+        id: crypto.randomUUID(),
+        name: file.name,
+        storagePath,
+        duration,
+      };
+
+      set((state) => ({
+        assets: [...state.assets, newAsset]
+      }));
+    },
+
+    removeAsset: (assetId) => {
+      set((state) => ({
+        assets: state.assets.filter(a => a.id !== assetId)
+      }));
+    },
+
+    addClipFromAsset: async (trackId, assetId, startBeat) => {
+      const asset = get().assets.find(a => a.id === assetId);
+      if (!asset) return;
+
+      get().pushHistory();
+
+      const tempo = get().project.tempo;
+      const durationBeats = (asset.duration * tempo) / 60;
+
+      const newClip: AudioClip = {
+        id: crypto.randomUUID(),
+        storagePath: asset.storagePath,
+        startBeat: Math.max(0, startBeat),
+        durationBeats,
+        offsetBeats: 0,
+        fadeInMs: 30,
+        fadeOutMs: 80,
+        fadeInCurve: 'linear',
+        fadeOutCurve: 'exp',
+      };
+
+      set((state) => {
+        const tracks = state.project.tracks.map(track =>
+          track.id === trackId
+            ? { ...track, audioClips: [...(track.audioClips || []), newClip] }
+            : track
+        );
+        return { project: { ...state.project, tracks } };
+      });
+
+      if (get().isPlaying) {
+        const tr = get().project.tracks.find(t => t.id === trackId);
+        const eff = tr ? getEffectiveGain(tr) : 0.85;
+        const id = await resolveClipAudioId(asset.storagePath);
+        if (id) audioEngine.scheduleClip(id, newClip.startBeat, 0, eff, trackId);
+      }
+
+      // Realtime notify collaborators (new clip)
+      const uid = useAuthStore.getState().user?.id;
+      if (uid) broadcastClipMove(get().project.id, uid, trackId, newClip.id, newClip.startBeat);
     },
 
     // === Big Picture Editing ===
@@ -686,6 +1188,18 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       });
       // NOTE: Do not auto-refresh during drag — it restarts audio.
       // Playback will use the updated positions on next play/stop cycle.
+
+      // Auto crossfade for quality (Cubase style) on audio clips
+      const movedClip = get().project.tracks.find(t => t.id === trackId)?.audioClips?.find(c => c.id === clipId);
+      if (movedClip) {
+        get().autoCrossfade(trackId);
+      }
+
+      scheduleAutosave(get().project);
+      const userId = useAuthStore.getState().user?.id;
+      if (userId) {
+        broadcastClipMove(get().project.id, userId, trackId, clipId, snapped);
+      }
     },
 
     resizeClip: (trackId, clipId, newDurationBeats, newStartBeat, newOffsetBeats) => {
@@ -699,16 +1213,20 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           if (track.audioClips?.some(c => c.id === clipId)) {
             return {
               ...track,
-              audioClips: track.audioClips.map((clip) =>
-                clip.id === clipId
-                  ? {
-                      ...clip,
-                      durationBeats: dur,
-                      startBeat: newStartBeat !== undefined ? Math.max(0, newStartBeat) : clip.startBeat,
-                      offsetBeats: newOffsetBeats !== undefined ? Math.max(0, newOffsetBeats) : clip.offsetBeats,
-                    }
-                  : clip
-              ),
+              audioClips: track.audioClips.map((clip) => {
+                if (clip.id !== clipId) return clip;
+                const updated = {
+                  ...clip,
+                  durationBeats: dur,
+                  startBeat: newStartBeat !== undefined ? Math.max(0, newStartBeat) : clip.startBeat,
+                  offsetBeats: newOffsetBeats !== undefined ? Math.max(0, newOffsetBeats) : clip.offsetBeats,
+                };
+                // Clamp fades if shorter
+                const clipMs = dur * (60000 / get().project.tempo);
+                if (updated.fadeInMs && updated.fadeInMs > clipMs) updated.fadeInMs = clipMs;
+                if (updated.fadeOutMs && updated.fadeOutMs > clipMs) updated.fadeOutMs = clipMs;
+                return updated;
+              }),
             };
           }
 
@@ -732,6 +1250,13 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       });
 
       if (get().isPlaying) get().refreshPlayback();
+
+      // Broadcast resize as move (simple event reuse for receiver)
+      const userId = useAuthStore.getState().user?.id;
+      if (userId) {
+        const finalStart = newStartBeat !== undefined ? newStartBeat : get().project.tracks.find(t => t.id === trackId)?.audioClips?.find(c => c.id === clipId)?.startBeat ?? 0;
+        broadcastClipMove(get().project.id, userId, trackId, clipId, finalStart);
+      }
     },
 
     deleteClip: (trackId, clipId) => {
@@ -1084,7 +1609,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         audioEngine.stop();
         set({ currentBeat: clamped });
         // Resume from new position immediately
-        audioEngine.play(clamped).then(() => {
+        audioEngine.play(clamped).then(async () => {
           // Rebuild signal chain after seek
           let { project } = get();
           project.tracks.forEach(t => {
@@ -1100,18 +1625,31 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           // Refresh project after the state update
           project = get().project;
 
-          project.tracks.forEach((track) => {
-            if (track.type !== 'audio' || !track.audioClips) return;
+          for (const track of project.tracks) {
+            if (track.type !== 'audio' || !track.audioClips) continue;
             const eff = getEffectiveGain(track);
-            track.audioClips.forEach((clip) => {
+            for (const clip of track.audioClips) {
               if (clip.storagePath.startsWith('local:')) {
                 const audioId = clip.storagePath.replace('local:', '');
-                audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id);
-              } else if (clip.storagePath.startsWith('demo:')) {
-                audioEngine.scheduleClip(clip.storagePath, clip.startBeat, clip.offsetBeats, eff, track.id);
+                audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id, {
+                  fadeInMs: clip.fadeInMs || 0,
+                  fadeOutMs: clip.fadeOutMs || 0,
+                  fadeInCurve: clip.fadeInCurve || 'linear',
+                  fadeOutCurve: clip.fadeOutCurve || 'linear'
+                });
+              } else if (clip.storagePath.startsWith('demo:') || clip.storagePath.startsWith('storage:')) {
+                const audioId = await resolveClipAudioId(clip.storagePath);
+                if (audioId) {
+                  audioEngine.scheduleClip(audioId, clip.startBeat, clip.offsetBeats, eff, track.id, {
+                    fadeInMs: clip.fadeInMs || 0,
+                    fadeOutMs: clip.fadeOutMs || 0,
+                    fadeInCurve: clip.fadeInCurve || 'linear',
+                    fadeOutCurve: clip.fadeOutCurve || 'linear'
+                  });
+                }
               }
-            });
-          });
+            }
+          }
 
           // Reschedule MIDI
           const psb2 = audioEngine.getPlayStartBeat?.() ?? clamped;
@@ -1125,6 +1663,25 @@ export const useProjectStore = create<ProjectState>((set, get) => {
               });
             });
           });
+
+          // Schedule sidechain ducks for EDM ducking (beat synced)
+          const beatSec = 60 / project.tempo;
+          project.tracks.forEach((track) => {
+            if (track.sidechain?.enabled) {
+              const reduction = track.sidechain.reduction || 0.5;
+              const release = track.sidechain.releaseMs || 150;
+              // Schedule for next 32 beats using setTimeout (easy, beat accurate enough)
+              for (let b = Math.floor(clamped); b < Math.floor(clamped) + 32; b++) {
+                const beatStartTime = pst2 + (b - psb2) * beatSec;
+                const delay = Math.max(0, (beatStartTime - (audioEngine.getPlayStartTime?.() || Date.now()/1000)) * 1000 );
+                setTimeout(() => {
+                  if (get().isPlaying) {
+                    audioEngine.triggerDuck(track.id, reduction, release);
+                  }
+                }, delay);
+              }
+            }
+          });
         });
       } else {
         set({ currentBeat: clamped });
@@ -1132,5 +1689,15 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     refreshPlayback,
+
+    exportProject: async () => {
+      const { project } = get();
+
+      try {
+        await exportAndDownload(project);
+      } catch (err) {
+        console.error('Export failed', err);
+      }
+    },
   };
 });

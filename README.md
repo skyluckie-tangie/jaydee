@@ -25,7 +25,7 @@ npm run dev
 - **MIDI + Synth**: Web MIDI API + custom subtractive synth
 - **UI**: Canvas 기반 Timeline & Piano Roll
 
-전체 계획은 `plan.md` (세션 폴더) 또는 프로젝트 문서 참조.
+전체 계획과 단계별 상태는 `HANDOFF.md`를 참조하세요. (plan.md는 더 이상 사용되지 않습니다.)
 
 ## 개발 로드맵 (요약)
 
@@ -43,7 +43,7 @@ npm run dev
 - Audio / MIDI / FX는 먼저 **로컬**에서 완성한 후 realtime을 붙입니다.
 - 2인 실시간 협업이 목표이지만, 복잡하니 단계적으로 접근.
 
-자세한 계획과 파일 구조는 세션의 `plan.md`를 참고하세요.
+자세한 계획과 현재 단계는 `HANDOFF.md`를 참고하세요.
 
 행운을 빕니다! 🎹
 

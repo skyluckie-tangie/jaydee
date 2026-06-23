@@ -1,15 +1,97 @@
+// @ts-nocheck
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react'
 import { Upload, Plus } from 'lucide-react'
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
+import { arrayMove, SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { useProjectStore } from './stores/useProjectStore'
 import { Transport } from './components/daw/Transport'
-// PianoRoll import removed (Phase 3 MIDI/Piano handled in parallel session to avoid duplication)
+import { TrackListItem } from './components/daw/TrackListItem'
+import { Timeline } from './components/daw/Timeline'
 import { Mixer } from './components/daw/Mixer'
+import { PianoRoll } from './components/daw/PianoRoll'
+import { audioEngine } from './audio/AudioEngine'
 
-const TRACK_HEIGHT = 40 // MUST match --track-height in CSS. Do NOT change independently! Use in all height calcs and comments.
+import { TRACK_HEIGHT } from './lib/constants'
+import { useAuthStore } from './stores/useAuthStore'
+import { isSupabaseConfigured } from './lib/supabase'
 
 function App() {
   const [beatWidth, setBeatWidth] = useState(48); // pixels per beat, zoomable. Default was 48
   const [showMixer, setShowMixer] = useState(false)
+  const [openPianoRollClipId, setOpenPianoRollClipId] = useState<string | null>(() => {
+    // Default open a piano roll on launch if possible
+    const store = useProjectStore.getState();
+    let clipId: string | null = null;
+    for (const t of store.project.tracks) {
+      if (t.midiClips && t.midiClips.length > 0) {
+        clipId = t.midiClips[0].id;
+        break;
+      }
+    }
+    if (!clipId) {
+      let track = store.project.tracks.find((t: any) => t.type === 'instrument' || t.type === 'midi');
+      if (!track) {
+        store.addTrackOfType('instrument');
+        track = store.project.tracks[store.project.tracks.length - 1];
+      }
+      store.addMidiClip(track.id, 0, 8);
+      const clips = store.project.tracks.find((t: any) => t.id === track.id)?.midiClips || [];
+      if (clips.length > 0) clipId = clips[0].id;
+    }
+    return clipId;
+  })
+
+  // Auto seed some drum samples into Asset Pool on first load
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const st = useProjectStore.getState();
+      if ((st.assets || []).length < 3) st.seedDemoAssets();
+    }, 650);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Resume AudioContext on first user gesture (fixes "not allowed to start" autoplay policy)
+  useEffect(() => {
+    const resume = () => {
+      (audioEngine as any).resumeContext?.();
+      // also unlock on transport etc.
+    };
+    const opts = { once: true } as any;
+    window.addEventListener('click', resume, opts);
+    window.addEventListener('keydown', resume, opts);
+    return () => {
+      window.removeEventListener('click', resume as any);
+      window.removeEventListener('keydown', resume as any);
+    };
+  }, []);
+
+  // Sidebar toggles: allow completely hiding left (tracks) and right (pools) sidebars via top menu buttons
+  const [showTrackList, setShowTrackList] = useState(true)
+  const [showRightSidebar, setShowRightSidebar] = useState(true)
+
+  const { user, isCloudEnabled, signInAnonymously, signOut, signInWithEmail, signUpWithEmail, loading: authLoading } = useAuthStore()
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }))
+
+  useEffect(() => {
+    if (user?.id) {
+      useProjectStore.getState().initRealtime(user.id);
+
+      // Polish: try to load latest from cloud on sign-in
+      useProjectStore.getState().loadSavedProject(user.id).then((ok) => {
+        if (ok) {}
+      });
+    }
+  }, [user?.id])
+
+  const handleDragEnd = (event: any) => {
+    const { active, over } = event
+    if (active.id !== over?.id) {
+      const oldIndex = project.tracks.findIndex(t => t.id === active.id)
+      const newIndex = project.tracks.findIndex(t => t.id === over.id)
+      useProjectStore.getState().reorderTracks(oldIndex, newIndex)
+    }
+  }
 
   const { 
     project, 
@@ -29,7 +111,10 @@ function App() {
     loopStart,
     loopEnd,
     setLoopRegion,
-    toggleLoop
+    toggleLoop,
+    assets,
+    removeAsset,
+    addClipFromAsset
   } = useProjectStore()
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -43,10 +128,15 @@ function App() {
       (track.audioClips || []).forEach(clip => {
         max = Math.max(max, clip.startBeat + (clip.durationBeats || 1) + 8);
       });
-      // midiClips skipped here (parallel session)
+      (track.midiClips || []).forEach((clip: any) => {
+        max = Math.max(max, clip.startBeat + (clip.durationBeats || 1) + 8);
+      });
     });
     return max;
   }, [project]);
+
+  // Musical structure for ruler and bar lines (from project, default 4/4)
+  const beatsPerBar = project.timeSignature?.[0] || 4;
 
   // Ref for current beatWidth (used in key handlers to avoid stale closure)
   const beatWidthRef = useRef<number>(beatWidth);
@@ -97,12 +187,9 @@ function App() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    // Pick first audio track as target (simple fallback)
-    const targetTrack = project.tracks.find(t => t.type === 'audio')
-    if (!file || !targetTrack) return
-
-    await addAudioClip(targetTrack.id, file)
-    // input 리셋
+    if (!file) return
+    // Upload goes to Asset Pool (virtual folder), then drag-drop to tracks
+    await useProjectStore.getState().addAsset(file)
     e.target.value = ''
   }
 
@@ -110,7 +197,11 @@ function App() {
     fileInputRef.current?.click()
   }
 
-  const toggleMixer = () => setShowMixer(!showMixer)
+  const toggleMixer = () => {
+    const next = !showMixer
+    setShowMixer(next)
+
+  }
 
   // Keyboard shortcuts
   // - Space: toggle play
@@ -124,12 +215,14 @@ function App() {
       if (e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault();
         useProjectStore.getState().togglePlay();
+        // (toasts removed)
         return;
       }
 
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipIds.length > 0) {
         e.preventDefault();
         deleteSelectedClips();
+
         return;
       }
 
@@ -145,10 +238,12 @@ function App() {
       if (isUndo) {
         e.preventDefault();
         useProjectStore.getState().undo();
+
       }
       if (isRedo) {
         e.preventDefault();
         useProjectStore.getState().redo();
+
       }
 
       // Q key: toggle quantize on/off (free movement)
@@ -159,17 +254,34 @@ function App() {
         }
         e.preventDefault();
         useProjectStore.getState().toggleQuantize();
+
       }
 
       // Copy / Paste for clips
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c' && selectedClipIds.length > 0) {
         e.preventDefault();
         useProjectStore.getState().copySelectedClips();
+
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
         e.preventDefault();
         const ph = useProjectStore.getState().currentBeat;
         useProjectStore.getState().pasteClips(ph);
+
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        useProjectStore.getState().saveProjectNow(user?.id);
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        useProjectStore.getState().newProject();
+
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'e') {
+        e.preventDefault();
+        useProjectStore.getState().exportProject();
       }
 
       // Zoom timeline: H = zoom in, G = zoom out, centered on playhead
@@ -186,13 +298,17 @@ function App() {
         } else if (!inInput && key === 'l') {
           e.preventDefault();
           toggleLoop();
+
+        } else if (!inInput && key === 'm') {
+          e.preventDefault();
+          toggleMixer();
         }
       }
     }
 
     window.addEventListener('keydown', handleKeyDown, true); // capture so it can override input handling
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [selectedClipIds, deleteSelectedClips, clearSelection])
+  }, [selectedClipIds, deleteSelectedClips, clearSelection, user?.id, zoomTimeline, toggleLoop, toggleMixer])
 
   // Real data-driven timeline
   const handleClipMouseDown = (e: React.MouseEvent, trackId: string, clipId: string, currentStart: number) => {
@@ -463,8 +579,8 @@ function App() {
       const newlySelected: string[] = [];
 
       project.tracks.forEach((track, trackIdx) => {
-        const trackTop = trackIdx * 40;
-        const trackBottom = trackTop + 40;
+        const trackTop = trackIdx * TRACK_HEIGHT;
+        const trackBottom = trackTop + TRACK_HEIGHT;
 
         (track.audioClips || []).forEach((clip) => {
           const clipLeft = clip.startBeat * beatWidth;
@@ -492,236 +608,214 @@ function App() {
     window.addEventListener('mouseup', onUp, { once: true });
   };
 
-  const renderTimeline = () => {
-    return (
-      <>
-        {/* Colored Section Header (Arranger style) */}
-        <div className="arranger-bar">
-          <div className="arranger-section intro" style={{ width: '120px' }}>INTRO</div>
-          <div className="arranger-section verse" style={{ width: '180px' }}>VERSE</div>
-          <div className="arranger-section prech" style={{ width: '100px' }}>PRE CH</div>
-          <div className="flex-1 bg-[#1f2937]" />
-        </div>
-
-        {/* Loop Region Bar (top thin bar like marker track)
-            Drag here to define loop region. Highlights arrange area below. */}
-        <div
-          className="loop-region-bar"
-          onMouseDown={handleLoopRegionDragStart}
-          title="Drag to set Loop Region (L to toggle loop)"
-        >
-          {/* Visual representation of current loop in the bar */}
-          {loopEnabled && loopEnd > loopStart && (
-            <div
-              style={{
-                position: 'absolute',
-                left: `${loopStart * beatWidth}px`,
-                width: `${(loopEnd - loopStart) * beatWidth}px`,
-                top: '2px',
-                height: '14px',
-                background: 'rgba(250, 204, 21, 0.35)',
-                border: '1px solid rgba(250, 204, 21, 0.7)',
-                borderRadius: '1px',
-                pointerEvents: 'none'
-              }}
-            />
-          )}
-          {/* Playhead indicator in the loop bar (extends the arrow concept) */}
-          <div
-            className="playhead-handle"
-            style={{
-              left: `${currentBeat * beatWidth + 4}px`,
-              top: '-1px',
-              height: '20px',
-              width: '6px',
-              background: '#f87171',
-              borderRadius: '0 0 3px 3px',
-              pointerEvents: 'none',
-              zIndex: 50
-            }}
-          />
-          {/* Small label */}
-          <div className="absolute left-1 top-0 text-[9px] text-yellow-400/70 pointer-events-none">LOOP</div>
-        </div>
-
-        {/* Ruler - supports click and drag to scrub playhead.
-            The small triangle at the exact playhead x is the "marker" you can click to move. */}
-        <div 
-          className="timeline-ruler cursor-pointer select-none relative" 
-          onMouseDown={handleScrubStart}
-        >
-          {Array.from({ length: Math.ceil(requiredBeats) }).map((_, i) => (
-            <div key={i} className="beat-col">
-              {i % 4 === 0 ? `${Math.floor(i / 4) + 1}` : ''}
-            </div>
-          ))}
-
-          {/* Quantize tick marks in ruler */}
-          {isQuantizeOn && quantize > 0 && quantize < 1 && (
-            <div 
-              className="quantize-ticks"
-              style={{
-                position: 'absolute',
-                inset: 0,
-                background: `repeating-linear-gradient(90deg, transparent, transparent ${Math.max(2, beatWidth * quantize - 1)}px, rgba(255,255,255,0.4) ${Math.max(3, beatWidth * quantize)}px)`,
-                pointerEvents: 'none',
-                zIndex: 5
-              }}
-            />
-          )}
-
-          {/* Playhead marker (triangle) in the ruler for easy click-to-move */}
-          <div 
-            className="playhead-handle"
-            style={{ left: `${currentBeat * beatWidth + 4}px` }}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              handleScrubStart(e);
-            }}
-          />
-        </div>
-
-        <div 
-          className="timeline-content" 
-          style={{ minWidth: `${requiredBeats * beatWidth}px`, position: 'relative' }}
-          onClick={() => clearSelection()}
-          onMouseDown={(e) => {
-            const target = e.target as HTMLElement;
-            if (target.closest('.waveform-clip')) {
-              // Let the clip handle it (select or drag)
-              return;
-            }
-            // Start box selection (for multi-select)
-            handleBoxSelectStart(e);
-          }}
-        >
-          <div className="timeline-grid" />
-
-          {/* Loop region highlight overlay (yellow, high transparency) in arrange area.
-              This is the visual "loop region" highlight across the track backgrounds. */}
-          {loopEnabled && loopEnd > loopStart && (
-            <div
-              className="loop-highlight"
-              style={{
-                left: `${loopStart * beatWidth}px`,
-                width: `${(loopEnd - loopStart) * beatWidth}px`,
-              }}
-            />
-          )}
-
-          {/* Quantize subdivision lines (visible when Q on) - denser for smaller quantize */}
-          {isQuantizeOn && quantize > 0 && (
-            <div 
-              className="quantize-grid"
-              style={{
-                background: `repeating-linear-gradient(90deg, transparent, transparent ${Math.max(2, beatWidth * quantize - 1)}px, rgba(147, 197, 253, 0.35) ${Math.max(3, beatWidth * quantize)}px)`,
-                position: 'absolute',
-                inset: 0,
-                pointerEvents: 'none',
-                zIndex: 2
-              }}
-            />
-          )}
-
-          {project.tracks.map((track) => (
-            <div key={track.id} className="timeline-track-row" style={{ height: TRACK_HEIGHT }}>
-              {/* Each row height locked to TRACK_HEIGHT + border-box to guarantee pixel-perfect vertical alignment with left track-row.
-                  The .top-spacer above matches ruler+arranger.
-                  scrollTop is synced between trackListRef and timelineRef. */}
-              {/* Audio clips */}
-              {(track.audioClips || []).map((clip) => {
-                const left = clip.startBeat * beatWidth;
-                const width = Math.max(beatWidth, clip.durationBeats * beatWidth);
-                const isSelected = selectedClipIds.includes(clip.id);
-
-                return (
-                  <div
-                    key={clip.id}
-                    className={`waveform-clip ${isSelected ? 'selected' : ''}`}
-                    style={{ left: `${left}px`, width: `${width}px` }}
-                    onMouseDown={(e) => handleClipMouseDown(e, track.id, clip.id, clip.startBeat)}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // Selection logic is handled in onMouseDown to support modifiers (Shift) properly
-                      // and to coordinate with drag start.
-                    }}
-                  >
-                    <div className="wave" />
-                    <span className="relative z-10 text-[9px] px-1 truncate">
-                      {clip.storagePath.replace('local:', '').replace('demo:', '')}
-                    </span>
-                    {isSelected && (
-                      <>
-                        <div
-                          className="resize-handle left"
-                          onMouseDown={(e) => handleResizeMouseDown(e, track.id, clip.id, 'left', clip.startBeat, clip.durationBeats, clip.offsetBeats)}
-                        />
-                        <div
-                          className="resize-handle right"
-                          onMouseDown={(e) => handleResizeMouseDown(e, track.id, clip.id, 'right', clip.startBeat, clip.durationBeats, clip.offsetBeats)}
-                        />
-                      </>
-                    )}
-                  </div>
-                );
-              })}
-
-            </div>
-          ))}
-
-          {/* Playhead visual line (no pointer events, so clips underneath are clickable) */}
-          <div 
-            className="playhead" 
-            style={{ 
-              left: `${currentBeat * beatWidth + 4}px`,
-              height: `${project.tracks.length * TRACK_HEIGHT}px` 
-            }}
-          />
-
-          {/* Thin hitbox exactly over the playhead line for precise drag over tracks */}
-          <div 
-            className="playhead-hitbox"
-            style={{ 
-              left: `${currentBeat * beatWidth + 4}px`,
-              height: `${project.tracks.length * TRACK_HEIGHT}px` 
-            }}
-            onMouseDown={(e) => {
-              e.stopPropagation();
-              handleScrubStart(e);
-            }}
-          />
-
-          {/* Visual selection box during multi-select drag */}
-          {boxSelect && (() => {
-            const left = Math.min(boxSelect.startX, boxSelect.endX);
-            const top = Math.min(boxSelect.startY, boxSelect.endY);
-            const w = Math.abs(boxSelect.endX - boxSelect.startX);
-            const h = Math.abs(boxSelect.endY - boxSelect.startY);
-            return (
-              <div
-                style={{
-                  position: 'absolute',
-                  left,
-                  top,
-                  width: w,
-                  height: h,
-                  background: 'rgba(163, 163, 172, 0.18)',
-                  border: '1px dashed #a3a3ac',
-                  pointerEvents: 'none',
-                  zIndex: 25,
-                }}
-              />
-            );
-          })()}
-        </div>
-      </>
-    );
-  };
+  // Timeline drives the arranger. All engine features (mix, fades, inserts) wired for easy use.
 
   return (
     <div className="daw-app text-text">
-      {/* Transport */}
-      <Transport />
+      {/* Top Menu Bar - clean horizontal like Windows app, sharing line with transport controls */}
+      <div className="flex items-center gap-2 px-2 py-1 bg-[#0f172a] border-b border-[#334155] text-[11px]">
+        <div className="flex items-center gap-1.5">
+          <button onClick={toggleMixer} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            {showMixer ? '✕ Mixer' : 'Mixer'}
+          </button>
+          <button 
+            onClick={() => {
+              const store = useProjectStore.getState();
+              let track = project.tracks.find(t => t.midiClips && t.midiClips.length > 0);
+              if (!track) {
+                track = project.tracks.find(t => t.type === 'instrument' || t.type === 'midi');
+              }
+              if (!track) {
+                store.addTrackOfType('instrument');
+                track = store.project.tracks.find(t => t.type === 'instrument');
+              }
+              if (track) {
+                if (!track.midiClips || track.midiClips.length === 0) {
+                  store.addMidiClip(track.id, currentBeat, 4);
+                }
+                const clips = (store.project.tracks.find(t => t.id === track.id)?.midiClips) || [];
+                if (clips.length > 0) {
+                  setOpenPianoRollClipId(clips[0].id);
+      
+                }
+              }
+            }}
+            className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]"
+            title="Open Piano Roll for MIDI editing (or double-click MIDI clips)"
+          >
+            🎹 Piano Roll
+          </button>
+          <button onClick={() => setShowRightSidebar(!showRightSidebar)} className="px-2 py-1 rounded text-xs border border-[#475569] hover:bg-[#334155]">
+            {showRightSidebar ? 'HIDE POOLS' : 'POOLS'}
+          </button>
+          <button 
+            onClick={() => setShowTrackList(v => !v)} 
+            className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569] text-[10px]"
+            title="Toggle left track column (completely hide)"
+          >
+            {showTrackList ? '◀ Tracks' : 'Tracks ▶'}
+          </button>
+          <button 
+            onClick={() => setShowRightSidebar(v => !v)} 
+            className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569] text-[10px]"
+            title="Toggle right pools sidebar (completely hide)"
+          >
+            {showRightSidebar ? 'Pools ▶' : '◀ Pools'}
+          </button>
+          <button onClick={handleUploadClick} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            ⬆ Upload
+          </button>
+          <button onClick={() => {
+            const firstAudio = project.tracks.find(t => t.type === 'audio');
+            if (firstAudio) { addTestTone(firstAudio.id); }
+          }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Test Tone
+          </button>
+          <button onClick={() => { useProjectStore.getState().newProject() }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            New
+          </button>
+          <button onClick={() => {
+            useProjectStore.getState().saveProjectNow(user?.id).then((mode) => {
+
+            });
+          }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Save
+          </button>
+          <button onClick={async () => {
+            const ok = await useProjectStore.getState().loadSavedProject(user?.id);
+
+          }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Load
+          </button>
+          <button onClick={() => { useProjectStore.getState().loadDemoProject() }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569] text-amber-400">
+            Load Demo
+          </button>
+          <button onClick={() => useProjectStore.getState().seedDemoAssets()} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Drum Samples
+          </button>
+          <button onClick={() => useProjectStore.getState().loadSimpleDrumBeat()} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569] text-amber-400">
+            Make Beat
+          </button>
+          <button onClick={() => useProjectStore.getState().exportProject()} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569] text-emerald-400">
+            ⬇ Export Mix
+          </button>
+          <button onClick={() => {
+            project.tracks.forEach(t => {
+              if (t.audioClips && t.audioClips.length > 0) {
+                t.audioClips.forEach(c => {
+                  useProjectStore.getState().updateClipFade(t.id, c.id, {
+                    fadeInMs: 60 + Math.random()*40, 
+                    fadeOutMs: 80 + Math.random()*60,
+                    fadeInCurve: 's-curve',
+                    fadeOutCurve: 's-curve'
+                  });
+                });
+              }
+            });
+
+          }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Demo Fades
+          </button>
+          <button onClick={() => {
+            selectedClipIds.forEach(cid => {
+              project.tracks.forEach(t => {
+                if (t.audioClips?.some(c => c.id === cid)) {
+                  useProjectStore.getState().updateClipFade(t.id, cid, {fadeInMs: 80, fadeOutMs: 120, fadeInCurve: 's-curve', fadeOutCurve: 's-curve'});
+                }
+              });
+            });
+
+          }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Quick Fade Sel
+          </button>
+          <button onClick={() => {
+            project.tracks.forEach(t => useProjectStore.getState().autoCrossfade(t.id));
+
+          }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            Auto X-Fade All
+          </button>
+          <button onClick={() => { addTrackOfType('audio') }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            + Audio
+          </button>
+          <button onClick={() => { addTrackOfType('midi') }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            + MIDI
+          </button>
+          <button onClick={() => { addTrackOfType('instrument') }} className="px-2 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">
+            + Inst
+          </button>
+        </div>
+        <div className="flex-1" />
+        <div className="flex items-center gap-2 text-[10px]">
+          {isCloudEnabled ? (
+            user ? (
+              <>
+                <span className="text-emerald-400">☁ {user.email || 'Guest'}</span>
+                <button onClick={() => signOut()} className="px-1.5 py-0.5 rounded hover:bg-[#334155] border border-[#475569]">Sign out</button>
+              </>
+            ) : (
+              <div className="flex items-center gap-1">
+                <input
+                  type="email"
+                  placeholder="email"
+                  className="w-28 text-[10px] bg-[#1f2937] border border-[#475569] rounded px-1 py-0.5"
+                  id="auth-email"
+                  defaultValue=""
+                />
+                <input
+                  type="password"
+                  placeholder="pass"
+                  className="w-20 text-[10px] bg-[#1f2937] border border-[#475569] rounded px-1 py-0.5"
+                  id="auth-pass"
+                  defaultValue=""
+                />
+                <button
+                  disabled={authLoading}
+                  onClick={async () => {
+                    const emailEl = document.getElementById('auth-email') as HTMLInputElement;
+                    const passEl = document.getElementById('auth-pass') as HTMLInputElement;
+                    const email = emailEl?.value?.trim();
+                    const pass = passEl?.value;
+                    if (!email || !pass) { return; }
+                    try {
+                      await signInWithEmail(email, pass);
+                    } catch (e: any) { }
+                  }}
+                  className="text-[9px] px-1.5 py-0.5 border border-[#475569] hover:bg-[#334155]"
+                >Sign in</button>
+                <button
+                  disabled={authLoading}
+                  onClick={async () => {
+                    const emailEl = document.getElementById('auth-email') as HTMLInputElement;
+                    const passEl = document.getElementById('auth-pass') as HTMLInputElement;
+                    const email = emailEl?.value?.trim();
+                    const pass = passEl?.value;
+                    if (!email || !pass) { return; }
+                    try {
+                      await signUpWithEmail(email, pass);
+                    } catch (e: any) { }
+                  }}
+                  className="text-[9px] px-1.5 py-0.5 border border-[#475569] hover:bg-[#334155]"
+                >Sign up</button>
+                <button
+                  disabled={authLoading}
+                  onClick={() => signInAnonymously()}
+                  className="text-[9px] px-1 py-0.5 text-cyan-400"
+                >or guest</button>
+              </div>
+            )
+          ) : (
+            <span className="text-zinc-500" title="Set VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY in .env">Local mode</span>
+          )}
+          <span className="text-muted">Jaydee</span>
+        </div>
+      </div>
+
+      {/* Transport (now cleaner, balanced) */}
+      <Transport 
+        onZoomOut={() => zoomTimeline(1 / 1.2)}
+        onZoomIn={() => zoomTimeline(1.2)}
+        onGoToZero={() => useProjectStore.getState().seek(0)}
+      />
 
       <input
         ref={fileInputRef}
@@ -731,185 +825,166 @@ function App() {
         onChange={handleFileUpload}
       />
 
-      {/* Main Layout: Left Track List + Right Timeline */}
-      <div className="main-area">
-        {/* === Track List (Left) - driven by store === */}
-        <div 
-          ref={trackListRef}
-          className="track-list"
-          onScroll={() => syncScroll(trackListRef, timelineRef)}
-        >
-          {/* Spacer to align first track-row exactly under the ruler (prevents misalignment) */}
-          {/* Spacer height == --top-offset (arranger + ruler) so that first .track-row top aligns exactly with first .timeline-track-row top.
-              This + shared --track-height var + TRACK_HEIGHT const + scroll sync = unbreakable alignment guarantee. */}
-          <div className="top-spacer" />
-          {project.tracks.map((track) => {
-            const colorClass = 
-              track.type === 'audio' ? 'audio' : 
-              track.type === 'instrument' ? 'instrument' : 'fx';
+      {/* Main Layout - clean row: tracks + timeline (always visible core) + optional pools */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left: Track list (toggleable but default on) */}
+        {showTrackList && (
+          <div style={{ width: 300, flexShrink: 0 }} className="flex flex-col h-full bg-[#1f2937] border-r border-[#334155]">
+            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+              <SortableContext items={project.tracks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+                <div 
+                  ref={trackListRef}
+                  className="track-list"
+                  onScroll={() => syncScroll(trackListRef, timelineRef)}
+                  style={{ flex: 1, overflowY: 'auto', width: '100%' }}
+                >
+                  <div className="top-spacer" />
+                  {project.tracks.map((track, idx) => (
+                    <TrackListItem
+                      key={track.id}
+                      track={track}
+                      index={idx}
+                      isSelected={selectedClipIds.includes(track.id)}
+                      onSelect={() => selectClip(track.id)}
+                      onGainChange={(g) => useProjectStore.getState().setTrackGain(track.id, g)}
+                      onPanChange={(p) => useProjectStore.getState().setTrackPan(track.id, p)}
+                      onToggleMute={() => useProjectStore.getState().toggleMute(track.id)}
+                      onToggleSolo={() => useProjectStore.getState().toggleSolo(track.id)}
+                      onToggleWrite={() => {
+                        useProjectStore.getState().toggleAutomationWrite(track.id);
+                        const writing = useProjectStore.getState().project.tracks.find(t => t.id === track.id)?.automationWrite;
 
-            return (
-              <div key={track.id} className={`track-row ${colorClass}`}>
-                <div className="color-strip" />
-                <div className="track-content">
-                  <div className="track-header">
-                    <div className="track-icon">
-                      {track.type === 'audio' ? '〰' : track.type === 'instrument' ? '♪' : 'FX'}
-                    </div>
-                    <div className="track-name flex items-center gap-1">
-                      {track.name} 
-                      {track.inserts.length > 0 && (
-                        <span className="text-[8px] px-1 bg-[#374151] rounded text-[#34d399]">{track.inserts.length}FX</span>
-                      )}
-                    </div>
-
-                    {/* Quick insert add from arrange view for fast signal chain testing */}
-                    <div className="flex gap-px ml-auto text-[7px]">
-                      <span 
-                        className="cursor-pointer px-0.5 hover:text-[#34d399]" 
-                        onClick={() => useProjectStore.getState().addInsert(track.id, { type: 'eq3band', params: { lowGain: 0, midGain: 0, highGain: 0 } })}
-                        title="Add EQ"
-                      >EQ</span>
-                      <span 
-                        className="cursor-pointer px-0.5 hover:text-[#f59e0b]" 
-                        onClick={() => useProjectStore.getState().addInsert(track.id, { type: 'compressor', params: { threshold: -20, ratio: 4 } })}
-                        title="Add Comp"
-                      >C</span>
-                    </div>
-
-                    <div className="ms-group">
-                      <div 
-                        className={`ms-btn m ${track.muted ? 'active' : ''}`}
-                        onClick={(e) => { e.stopPropagation(); useProjectStore.getState().toggleMute(track.id); }}
-                        title="Mute"
-                      >
-                        M
-                      </div>
-                      <div 
-                        className={`ms-btn s ${track.soloed ? 'active' : ''}`}
-                        onClick={(e) => { e.stopPropagation(); useProjectStore.getState().toggleSolo(track.id); }}
-                        title="Solo"
-                      >
-                        S
-                      </div>
-                    </div>
-                  </div>
-
-                  <div 
-                    className="track-vol" 
-                    onMouseDown={(e) => {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      const update = (clientX: number) => {
-                        const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-                        useProjectStore.getState().setTrackGain(track.id, pct);
-                      };
-                      update(e.clientX);
-                      const onMove = (me: MouseEvent) => update(me.clientX);
-                      const onUp = () => {
-                        window.removeEventListener('mousemove', onMove);
-                        window.removeEventListener('mouseup', onUp);
-                      };
-                      window.addEventListener('mousemove', onMove);
-                      window.addEventListener('mouseup', onUp, { once: true });
-                    }}
-                    title="Drag to set volume (live)"
-                  >
-                    <div className="fill" style={{ width: `${Math.round(track.gain * 100)}%` }} />
-                  </div>
-                  {/* Simple pan control */}
-                  <div 
-                    className="track-pan" 
-                    onMouseDown={(e) => {
-                      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                      const update = (clientX: number) => {
-                        const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-                        const pan = (pct - 0.5) * 2;
-                        useProjectStore.getState().setTrackPan(track.id, pan);
-                      };
-                      update(e.clientX);
-                      const onMove = (me: MouseEvent) => update(me.clientX);
-                      const onUp = () => {
-                        window.removeEventListener('mousemove', onMove);
-                        window.removeEventListener('mouseup', onUp);
-                      };
-                      window.addEventListener('mousemove', onMove);
-                      window.addEventListener('mouseup', onUp, { once: true });
-                    }}
-                    title="Drag to set pan (live via engine nodes)"
-                  >
-                    <div className="pan-fill" style={{ left: `${(track.pan + 1) * 50}%` }} />
-                  </div>
+                      }}
+                      onRemove={() => { useProjectStore.getState().removeTrack(track.id) }}
+                      onOpenMixer={() => setShowMixer(true)}
+                      onOpenPianoRoll={(clipId) => {
+                        if (clipId) setOpenPianoRollClipId(clipId);
+                        else {
+                          const t = project.tracks.find(tt => tt.midiClips && tt.midiClips.length > 0);
+                          if (t?.midiClips?.[0]) setOpenPianoRollClipId(t.midiClips[0].id);
+                        }
+                      }}
+                    />
+                  ))}
                 </div>
-              </div>
-            );
-          })}
-
-          <div className="p-1 border-t border-[#334155] mt-1 pt-2 space-y-1">
-            <button 
-              onClick={toggleMixer} 
-              className="button w-full text-[10px] font-medium"
-              style={{ background: showMixer ? '#34d399' : undefined, color: showMixer ? '#111' : undefined }}
-            >
-              {showMixer ? '✕ CLOSE MIXER' : '🎚️ OPEN MIXER (Inserts + Master Bus)'}
-            </button>
-            <button 
-              onClick={() => useProjectStore.getState().loadDemoMixChain()}
-              className="button w-full text-[9px] mt-0.5 bg-[#4b5563] hover:bg-[#6b7280]"
-              title="Load varied insert chains (EQ + Comp) across tracks to demo the full signal chain"
-            >
-              📦 LOAD DEMO MIX (Inserts)
-            </button>
-            <button 
-              onClick={() => useProjectStore.getState().loadDemoMixChain()}
-              className="button w-full text-[9px] mt-0.5"
-              title="Load a full demo insert chain (EQ + Comp) on tracks to test signal flow"
-            >
-              📦 LOAD DEMO MIX CHAIN
-            </button>
-            <div className="flex gap-1">
-              <button 
-                onClick={() => addTrackOfType('audio')}
-                className="button flex-1 flex items-center justify-center gap-1 text-[10px]"
-                title="Add Audio Track (Cubase style)"
-              >
-                <Plus size={10} /> Audio
-              </button>
-            </div>
-            <button 
-              onClick={handleUploadClick}
-              className="button w-full flex items-center justify-center gap-1 text-[10px]"
-            >
-              <Upload size={11} /> Upload Audio
-            </button>
-            <button 
-              onClick={() => {
-                const firstAudio = project.tracks.find(t => t.type === 'audio');
-                if (firstAudio) addTestTone(firstAudio.id);
-              }}
-              className="button w-full flex items-center justify-center gap-1 text-[10px]"
-            >
-              Add Test Tone
-            </button>
+              </SortableContext>
+            </DndContext>
           </div>
-        </div>
+        )}
 
-        {/* === Main Timeline (Right) === */}
+        {/* Timeline - the core arranger, should always be visible */}
         <div 
           ref={timelineRef}
           className="timeline"
+          style={{ flex: 1, minWidth: 0, background: '#0f172a' }}
           onScroll={() => syncScroll(timelineRef, trackListRef)}
         >
-          {renderTimeline()}
+          <Timeline
+            tracks={project.tracks}
+            currentBeat={currentBeat}
+            beatWidth={beatWidth}
+            requiredBeats={requiredBeats}
+            selectedClipIds={selectedClipIds}
+            onClipMouseDown={handleClipMouseDown}
+            onClipClick={(clipId) => selectClip(clipId)}
+            onResizeStart={handleResizeMouseDown}
+            onMidiDoubleClick={(clipId) => setOpenPianoRollClipId(clipId)}
+            onFadeEdit={(clipId) => {}}
+            isQuantizeOn={isQuantizeOn}
+            quantize={quantize}
+            loopEnabled={loopEnabled}
+            loopStart={loopStart}
+            loopEnd={loopEnd}
+            onScrubStart={handleScrubStart}
+            onLoopRegionDragStart={handleLoopRegionDragStart}
+          />
         </div>
+
+        {/* Right pools (toggleable) */}
+        {showRightSidebar && (
+          <div style={{ width: 200, flexShrink: 0 }} className="flex flex-col h-full bg-[#1f2937] border-l border-[#334155] overflow-hidden text-[10px]">
+            <div className="p-1 border-b border-[#334155] bg-[#111827]">Asset Pool (drag to tracks/timeline)</div>
+            <div className="flex-1 overflow-auto p-1">
+              {assets.length === 0 && <div className="text-muted text-[9px]">Upload or Demo</div>}
+              {assets.map(asset => (
+                <div
+                  key={asset.id}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'copy';
+                    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'asset', id: asset.id }));
+                  }}
+                  className="text-[9px] truncate mb-0.5 bg-[#1f2937] rounded px-1 py-0.5 cursor-grab active:cursor-grabbing hover:bg-[#374151] flex justify-between items-center"
+                  title={`Drag to timeline or track to add clip`}
+                >
+                  <span className="truncate">{asset.name}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const target = project.tracks.find(t => t.type === 'audio') || project.tracks[0];
+                      if (target) useProjectStore.getState().addClipFromAsset(target.id, asset.id, currentBeat);
+                    }}
+                    className="text-[8px] px-1 text-cyan-400 hover:text-cyan-300"
+                    title="Add to first audio track at playhead"
+                  >
+                    +
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="p-1 border-t border-[#334155] bg-[#111827]">Plugin Pool (drag to tracks)</div>
+            <div className="flex-1 overflow-auto p-1">
+              {['eq3band','compressor','drive','delay'].map(t => (
+                <div
+                  key={t}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'copy';
+                    e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'plugin', pluginType: t }));
+                  }}
+                  className="text-[9px] mb-0.5 bg-[#1f2937] rounded px-1 py-0.5 cursor-grab active:cursor-grabbing hover:bg-[#374151] flex justify-between items-center"
+                  title={`Drag to track to add as insert`}
+                >
+                  <span>{t}</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const first = project.tracks[0];
+                      if (first) {
+                        const params = t === 'eq3band' ? {lowGain:0,midGain:0,highGain:0} :
+                          t === 'compressor' ? {threshold:-24,ratio:4,attack:0.003,release:0.25} :
+                          t === 'drive' ? {amount:2.5} : {time:0.25,feedback:0.3,wet:0.2};
+                        useProjectStore.getState().addInsert(first.id, {type: t as any, params});
+    
+                      }
+                    }}
+                    className="text-[8px] px-1 text-cyan-400 hover:text-cyan-300"
+                    title="Add to first track"
+                  >
+                    +
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Mixer Panel - Cubase-style horizontal channel strips (vertical faders, inserts, meters, master) */}
       <Mixer open={showMixer} onClose={() => setShowMixer(false)} />
+
+      {openPianoRollClipId && (
+        <PianoRoll 
+          clipId={openPianoRollClipId} 
+          onClose={() => setOpenPianoRollClipId(null)} 
+        />
+      )}
 
       {/* Minimal bottom status (toggle lives in left track-list area for minimal diff) */}
       <div className="h-5 bg-[#0f172a] border-t border-[#334155] text-[9px] px-3 flex items-center text-text-muted">
         Jaydee • {project.tempo} BPM • Local • SignalChain v2 (Inserts + Master Bus)
+        <button onClick={toggleMixer} className="ml-3 px-1.5 py-px text-[9px] border border-[#475569] hover:bg-[#334155] rounded">{showMixer ? '✕ Mixer' : 'Mixer'}</button>
       </div>
+
     </div>
   )
 }

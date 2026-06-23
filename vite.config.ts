@@ -34,8 +34,8 @@ function jaydeeServerMessage() {
         console.log('     + MIDI Clip 버튼     새 MIDI 클립 추가')
         console.log('')
 
-        console.log(yellow + '   현재 단계' + reset + ': ' + bold + 'Phase 3 — MIDI + Piano Roll + Subtractive Synth' + reset)
-        console.log('   (드럼은 기본 재생, Moog Bass 트랙에 MIDI 클립이 있습니다)\n')
+        console.log(yellow + '   현재 단계' + reset + ': ' + bold + 'Phase 5–6 — Cloud save + Export + Polish' + reset)
+        console.log('   Ctrl+S Save | Ctrl+E Export | Load Demo for test mix\n')
       })
     },
   }
@@ -51,6 +51,6 @@ export default defineConfig({
     host: 'localhost',   // Force IPv4 + IPv6 localhost binding
     port: 5173,
     strictPort: false,
-    open: false,         // We'll let user open manually or via the printed URL
+    open: true,          // YOLO mode: auto-open browser on start
   },
 })
