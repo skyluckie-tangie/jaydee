@@ -3,7 +3,7 @@
 온라인에서 친구와 함께 실시간으로 작곡할 수 있는 클라우드 DAW입니다.
 초보자 친화적으로 단계별로 만들어 갑니다.
 
-**현재 단계**: Phase 0 완료 (기본 Vite + React + TS + Tailwind + DAW 스타일 UI 쉘 + Zustand store)
+**현재 단계**: Phase 3 진행 — MIDI + Piano Roll + Subtractive Synth 구현 완료 (타임라인 MIDI 클립 표시, 편집, 재생)
 
 ## 빠른 시작
 
@@ -30,7 +30,7 @@ npm run dev
 ## 개발 로드맵 (요약)
 
 - **Phase 0** (완료): 프로젝트 세팅 + 기본 DAW 레이아웃
-- **Phase 1**: AudioEngine + beat scheduler + 오디오 클립 재생
+- **Phase 1**: AudioEngine + beat scheduler + 오디오 클립 재생 (기본 데모 사운드 + 드래그 편집 + 단축키 + ruler seek 구현됨)
 - **Phase 2**: 멀티트랙 + 드래그/트림 편집
 - **Phase 3**: MIDI + Piano Roll + 간단 Subtractive Synth
 - **Phase 4**: Mixer + 첫 custom FX (AudioWorklet로 Dynamics 구현)

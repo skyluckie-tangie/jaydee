@@ -5,8 +5,9 @@ export type TrackType = 'audio' | 'midi' | 'instrument';
 
 export interface PluginInstance {
   id: string;
-  type: 'compressor' | 'eq3band' | 'gain' | string;
+  type: 'compressor' | 'eq3band' | 'gain' | 'filter' | string;
   params: Record<string, number>;
+  bypass?: boolean;
 }
 
 export interface AudioClip {
@@ -36,11 +37,16 @@ export interface Track {
   id: string;
   type: TrackType;
   name: string;
-  gain: number;            // 0-1
-  pan: number;             // -1 to 1
+  gain: number;            // 0-1 (linear, for internal use)
+  pan: number;             // -1 (left) to 1 (right)
+  muted: boolean;
+  soloed: boolean;
   inserts: PluginInstance[];
   audioClips?: AudioClip[];
   midiClips?: MidiClip[];
+  // Future high-end (arrange/mix)
+  color?: string;
+  height?: number;         // track row height multiplier
 }
 
 export interface Project {

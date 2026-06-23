@@ -4,15 +4,35 @@
 
 /* DAW-specific dark theme - Cubase inspired */
 :root {
-  --bg: #0f0f12;
-  --bg-panel: #18181b;
-  --bg-elevated: #27272a;
-  --border: #3f3f46;
-  --accent: #a78bfa;
-  --accent-hover: #c4b5fd;
-  --text: #e4e4e7;
-  --text-muted: #a1a1aa;
-  --transport-bg: #111113;
+  /* Cubase-inspired dark theme */
+  --bg: #111827;
+  --bg-panel: #1f2937;
+  --bg-elevated: #374151;
+  --border: #4b5563;
+  --accent: #34d399;          /* mint green */
+  --accent-hover: #6ee7b7;
+  --text: #e5e7eb;
+  --text-muted: #9ca3af;
+  --transport-bg: #0f172a;
+
+  /* Track type colors (Cubase style) */
+  --track-audio: #166534;     /* deep green */
+  --track-midi: #374151;      /* gray */
+  --track-instrument: #1e40af;/* blue */
+  --track-fx: #991b1b;        /* red */
+  --track-group: #1e3a8a;     /* darker blue */
+
+  /* CRITICAL GUARANTEE for track<->clip vertical alignment - NEVER edit one without the others:
+     - Update here
+     - Update TRACK_HEIGHT const in App.tsx
+     - Update all .track-row and .timeline-track-row heights
+     - Update spacer
+     - Keep syncScroll
+  */
+  --arranger-height: 26px;
+  --ruler-height: 16px;
+  --track-height: 40px;
+  --top-offset: calc(var(--arranger-height) + var(--ruler-height)); /* 42px */
 }
 
 body {
@@ -41,51 +61,125 @@ body {
 .transport-bar {
   background: var(--transport-bg);
   border-bottom: 1px solid var(--border);
-  height: 48px;
+  height: 38px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  gap: 12px;
+  padding: 0 14px;
+  gap: 16px;
   flex-shrink: 0;
+  font-size: 12px;
 }
 
-.main-area {
+/* Transport buttons - Cubase inspired */
+.transport-controls {
   display: flex;
-  flex: 1;
-  overflow: hidden;
+  align-items: center;
+  gap: 3px;
 }
 
-.track-list {
-  width: 220px;
-  background: var(--bg-panel);
-  border-right: 1px solid var(--border);
-  flex-shrink: 0;
-  overflow-y: auto;
+.transport-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  font-size: 13px;
 }
 
-.timeline {
-  flex: 1;
+.transport-btn:hover {
   background: var(--bg);
-  overflow: auto;
-  position: relative;
+  border-color: var(--accent);
+  color: var(--text);
 }
 
-.mixer {
-  width: 260px;
-  background: var(--bg-panel);
-  border-left: 1px solid var(--border);
-  flex-shrink: 0;
-  overflow-y: auto;
+.transport-btn.play-btn {
+  width: 34px;
+  height: 28px;
 }
 
+.transport-btn.play-btn.playing {
+  background: #22c55e;
+  border-color: #16a34a;
+  color: #111;
+}
+
+.transport-btn.play-btn:hover {
+  background: var(--bg);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.transport-btn.play-btn.playing:hover {
+  background: #16a34a;
+  border-color: #15803d;
+}
+
+/* Position display - professional digital look */
+.position-display {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 2px 10px;
+  border-radius: 2px;
+  min-width: 78px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+/* Compact BPM (right side, small) */
+.bpm-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: 11px;
+}
+
+.bpm-icon {
+  color: var(--text-muted);
+  font-size: 11px;
+  user-select: none;
+}
+
+.bpm-input {
+  width: 34px;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  text-align: center;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 1px 0;
+  outline: none;
+}
+
+.bpm-input:focus {
+  color: var(--text);
+}
+
+/* General button styles (kept for other UI elements) */
 .button {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 6px 12px;
-  border-radius: 4px;
+  padding: 4px 9px;
+  border-radius: 3px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   transition: all 0.1s;
 }
 
@@ -108,4 +202,702 @@ body {
 canvas.daw-canvas {
   display: block;
   image-rendering: crisp-edges;
+}
+
+/* === Cubase-style Layout === */
+.daw-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+/* Arranger Section Bar (top) */
+.arranger-bar {
+  height: var(--arranger-height);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: stretch;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+  z-index: 30;
+}
+
+.arranger-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-right: 1px solid rgba(0,0,0,0.25);
+  white-space: nowrap;
+  color: #111;
+}
+
+.arranger-section.intro { background: #fde047; }
+.arranger-section.verse { background: #fb923c; }
+.arranger-section.prech { background: #c026ff; color: #fff; }
+
+/* Main split */
+.main-area {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* === Track List (Left) === */
+.track-list {
+  width: 205px;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-y: auto;
+  font-size: 11px;
+  box-sizing: border-box;
+}
+
+/* CRITICAL ALIGNMENT SPACER
+   Height exactly matches --top-offset so the FIRST .track-row's top edge
+   lines up with the FIRST .timeline-track-row's top edge (under the ruler).
+   Combined with --track-height var + TRACK_HEIGHT const + syncScroll = absolute guarantee
+   against vertical misalignment between tracks and their clips.
+*/
+.track-list > .top-spacer {
+  height: var(--top-offset);
+  flex-shrink: 0;
+}
+
+.track-row {
+  height: var(--track-height);
+  display: flex;
+  align-items: center;
+  padding: 0 3px 0 0;
+  border-bottom: 1px solid #334155;
+  background: #1f2937;
+  position: relative;
+  box-sizing: border-box;
+  /* CRITICAL: height + border-box MUST match .timeline-track-row exactly for alignment */
+}
+
+.track-row:hover {
+  background: #334155;
+}
+
+/* Colored left strip */
+.track-row .color-strip {
+  width: 4px;
+  height: 100%;
+  margin-right: 3px;
+  flex-shrink: 0;
+}
+
+.track-row.audio .color-strip { background: #166534; }
+.track-row.instrument .color-strip { background: #1e40af; }
+.track-row.fx .color-strip { background: #991b1b; }
+.track-row.group .color-strip { background: #1e3a8a; }
+
+/* Track content */
+.track-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.track-header {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+}
+
+.track-icon {
+  width: 13px;
+  font-size: 10px;
+  opacity: 0.85;
+  text-align: center;
+}
+
+.track-name {
+  font-weight: 500;
+  font-size: 11px;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* M S buttons */
+.ms-group {
+  display: flex;
+  gap: 1px;
+  margin-left: auto;
+}
+
+.ms-btn {
+  font-size: 7px;
+  padding: 0 2px;
+  height: 10px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  background: #374151;
+  color: #9ca3af;
+  border-radius: 1px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ms-btn.active.m { background: #f59e0b; color: #111; }
+.ms-btn.active.s { background: #22c55e; color: #111; }
+
+/* Volume bar */
+.track-vol {
+  height: 2px;
+  background: #475569;
+  margin: 2px 2px 0 15px;
+  border-radius: 1px;
+  position: relative;
+}
+
+.track-vol > .fill {
+  height: 100%;
+  background: #34d399;
+  border-radius: 1px;
+}
+
+/* === Timeline (Right) === */
+.timeline {
+  flex: 1;
+  background: #0f172a;
+  overflow: auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.timeline-ruler {
+  height: var(--ruler-height);
+  background: #1e2937;
+  border-bottom: 1px solid #334155;
+  display: flex;
+  font-size: 9px;
+  color: #64748b;
+  font-family: ui-monospace, monospace;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  overflow: hidden;
+}
+
+.beat-col {
+  width: 48px;
+  border-right: 1px solid rgba(255,255,255,0.05);
+  padding-left: 2px;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.timeline-content {
+  flex: 1;
+  position: relative;
+}
+
+.timeline-track-row {
+  height: var(--track-height);
+  border-bottom: 1px solid #334155;
+  position: relative;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  /* CRITICAL: MUST exactly match .track-row height/border for perfect clip-to-track vertical alignment.
+     If you change one, change both + the --track-height var + TRACK_HEIGHT const in App.tsx */
+}
+
+/* Fake waveform clip */
+.waveform-clip {
+  position: absolute;
+  height: 26px;
+  background: #166534;
+  border: 1px solid #4ade80;
+  border-radius: 2px;
+  overflow: hidden;
+  font-size: 9px;
+  color: #86efac;
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
+  box-shadow: inset 0 0 6px rgba(0,0,0,0.4);
+  z-index: 5;
+}
+
+/* MIDI clip style (piano roll items on timeline) */
+.midi-clip {
+  position: absolute;
+  height: 26px;
+  background: #1e40af;
+  border: 1px solid #60a5fa;
+  border-radius: 2px;
+  overflow: hidden;
+  font-size: 9px;
+  color: #bae6fd;
+  display: flex;
+  align-items: center;
+  padding-left: 4px;
+  box-shadow: inset 0 0 6px rgba(0,0,0,0.35);
+  z-index: 5;
+}
+
+.midi-clip.selected {
+  border: 2px solid #f472b6;
+  box-shadow: 0 0 0 1px rgba(244, 114, 182, 0.5), inset 0 0 8px rgba(244, 114, 182, 0.3);
+  background: linear-gradient(to bottom, rgba(244,114,182,0.25) 0%, rgba(244,114,182,0.1) 100%), #1e40af;
+  color: #fce7f3;
+  z-index: 6;
+}
+
+/* Selection effect for clicked/dragged clips: outline + translucent highlight */
+.waveform-clip.selected {
+  border: 2px solid #60a5fa;
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.6), inset 0 0 10px rgba(96, 165, 250, 0.25);
+  background: linear-gradient(
+    to bottom,
+    rgba(96, 165, 250, 0.28) 0%,
+    rgba(96, 165, 250, 0.15) 100%
+  ), #166534;
+  color: #bae6fd;
+  z-index: 6;
+}
+
+.waveform-clip.selected .wave {
+  background: 
+    linear-gradient(90deg, transparent 0%, rgba(163,172,163,0.6) 40%, transparent 80%),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 3px,
+      rgba(255,255,255,0.45) 3px,
+      rgba(255,255,255,0.45) 5px
+    );
+}
+
+/* Resize handles for trim */
+.waveform-clip .resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  background: rgba(255, 255, 255, 0.6);
+  z-index: 20;
+  cursor: col-resize;
+  opacity: 0.8;
+}
+.waveform-clip .resize-handle:hover {
+  background: #fff;
+  opacity: 1;
+}
+.waveform-clip .resize-handle.left {
+  left: 0;
+}
+.waveform-clip .resize-handle.right {
+  right: 0;
+}
+
+/* Simple pan control */
+.track-pan {
+  height: 2px;
+  background: #475569;
+  margin: 2px 2px 0 15px;
+  border-radius: 1px;
+  position: relative;
+  cursor: pointer;
+}
+.track-pan .pan-fill {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 6px;
+  background: #34d399;
+  border-radius: 1px;
+  transform: translateX(-50%);
+}
+
+.waveform-clip .wave {
+  position: absolute;
+  inset: 2px 4px;
+  background: 
+    linear-gradient(90deg, transparent 0%, rgba(163,172,163,0.4) 40%, transparent 80%),
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent 4px,
+      rgba(255,255,255,0.25) 4px,
+      rgba(255,255,255,0.25) 6px
+    );
+  pointer-events: none;
+}
+
+/* Vertical grid */
+.timeline-grid {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 47px,
+    rgba(148,163,184,0.25) 48px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Quantize lines (finer, lighter) */
+.quantize-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Quantize ticks overlay in ruler (small marks) */
+.quantize-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Playhead visual line - does NOT block clicks */
+.playhead {
+  position: absolute;
+  top: 0;
+  width: 2px;
+  background: #ef4444;
+  z-index: 30;
+  pointer-events: none;   /* let clicks pass through to clips */
+}
+
+/* ==================== MIXER PANEL (Cubase MixConsole style) ==================== */
+.mixer-panel {
+  background: #1f2937;
+  border-top: 1px solid #4b5563;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  font-size: 10px;
+  max-height: 220px;
+  overflow: hidden;
+}
+
+.mixer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  font-weight: 600;
+  color: #9ca3af;
+  border-bottom: 1px solid #374151;
+  margin-bottom: 4px;
+}
+
+.mixer-master {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+}
+
+.mixer-strips {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.mixer-strip {
+  width: 78px;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 3px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  position: relative;
+}
+
+.mixer-strip.audio { border-left: 3px solid #166534; }
+.mixer-strip.instrument { border-left: 3px solid #1e40af; }
+
+.strip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 500;
+}
+
+.ms-group button {
+  font-size: 7px;
+  padding: 0 3px;
+  height: 12px;
+  line-height: 1;
+  border-radius: 1px;
+}
+
+.inserts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 42px;
+}
+
+.insert-slot {
+  background: #1f2937;
+  border: 1px solid #4b5563;
+  border-radius: 2px;
+  height: 14px;
+  font-size: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 3px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.insert-slot.empty {
+  justify-content: center;
+  color: #64748b;
+  font-weight: bold;
+}
+
+.insert-slot.selected {
+  border-color: #34d399;
+}
+
+.insert-slot.bypassed {
+  opacity: 0.4;
+}
+
+.bypass-btn, .remove-btn {
+  font-size: 7px;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  color: #64748b;
+}
+
+.strip-pan input {
+  width: 100%;
+  height: 12px;
+}
+
+.strip-fader {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 1;
+}
+
+.fader-container {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+.mixer-meter {
+  width: 8px;
+  height: 70px;
+  background: #0f172a;
+  border: 1px solid #334155;
+  position: relative;
+  overflow: hidden;
+}
+
+.meter-bg {
+  position: absolute;
+  inset: 1px;
+  background: linear-gradient(to top, #16a34a 30%, #eab308 60%, #ef4444 90%);
+}
+
+.meter-peak {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #fff;
+  transition: height 40ms linear;
+}
+
+.meter-rms {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255,255,255,0.4);
+  transition: height 80ms linear;
+}
+
+.fader {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 18px;
+  height: 70px;
+  accent-color: #34d399;
+}
+
+.gain-label {
+  font-size: 9px;
+  font-family: monospace;
+  width: 28px;
+  text-align: right;
+}
+
+.insert-editor {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: #0f172a;
+  border: 1px solid #4b5563;
+  padding: 6px;
+  font-size: 9px;
+  z-index: 50;
+}
+
+/* ==================== MIXER PANEL ENHANCEMENTS (for new Mixer.tsx) ==================== */
+/* Professional horizontal Cubase-style mixer. Matches existing dark theme. */
+.mixer-panel {
+  font-size: 11px;
+}
+
+.mixer-panel .channel-strip {
+  box-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  transition: border-color 0.1s;
+}
+
+.mixer-panel .channel-strip:hover {
+  border-color: #4b5563;
+}
+
+.mixer-panel .ms-btn {
+  font-size: 7px;
+  padding: 0 3px;
+  height: 11px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  background: #374151;
+  color: #9ca3af;
+  border-radius: 1px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.mixer-panel .ms-btn.active.m { background: #f59e0b; color: #111; }
+.mixer-panel .ms-btn.active.s { background: #22c55e; color: #111; }
+
+.mixer-panel .track-pan {
+  height: 3px;
+  background: #374151;
+  position: relative;
+  border-radius: 1px;
+}
+
+.mixer-panel .track-pan .pan-fill { /* legacy compat */
+  background: #34d399;
+}
+
+/* Horizontal overflow feel */
+.mixer-panel > div.flex-1 {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #111827;
+}
+
+.mixer-panel > div.flex-1::-webkit-scrollbar {
+  height: 6px;
+}
+.mixer-panel > div.flex-1::-webkit-scrollbar-track {
+  background: #111827;
+}
+.mixer-panel > div.flex-1::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+.mixer-panel > div.flex-1::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.insert-editor label {
+  display: block;
+  margin: 2px 0;
+}
+
+.insert-editor input[type="range"] {
+  width: 100%;
+}
+
+/* Small grab handle at the very top (in ruler area) for easy click */
+.playhead-handle {
+  position: absolute;
+  top: 0;
+  height: 18px;           /* height of ruler */
+  width: 12px;
+  transform: translateX(-5px);
+  z-index: 35;
+  cursor: ew-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.playhead-handle::after {
+  content: '';
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 8px solid #ef4444;
+}
+
+/* Thin vertical hitbox exactly on the line for precise grab over tracks */
+.playhead-hitbox {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  transform: translateX(-3px);
+  z-index: 31;
+  cursor: ew-resize;
+  pointer-events: auto;
+}
+
+/* Piano Roll styles */
+.piano-roll-container {
+  font-size: 11px;
+}
+
+.piano-grid {
+  background: #0f172a;
+  cursor: crosshair;
+}
+
+.piano-keys > div {
+  display: flex;
+  align-items: center;
+  font-family: ui-monospace, monospace;
+  padding-left: 3px;
+  user-select: none;
 }
