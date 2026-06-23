@@ -7,7 +7,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Build output
 dist
 dist-ssr
 *.local
@@ -22,3 +26,16 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# TypeScript
+*.tsbuildinfo
+
+# Vite specific
+.vite/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
