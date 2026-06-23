@@ -29,7 +29,10 @@ export function createEmptyProject(name = 'Untitled'): Project {
         muted: false,
         soloed: false,
         automationWrite: false,
-        inserts: [],
+        inserts: [
+          { id: 'inst-eq', type: 'eq3band', params: { lowGain: 1.5, midGain: 0.5, highGain: -1.5 }, bypass: false },
+          { id: 'inst-drive', type: 'drive', params: { amount: 1.3 }, bypass: false },
+        ],
         audioClips: [],
         midiClips: [
           {
@@ -37,10 +40,10 @@ export function createEmptyProject(name = 'Untitled'): Project {
             startBeat: 0,
             durationBeats: 4,
             notes: [
-              { id: crypto.randomUUID(), pitch: 60, startBeat: 0, durationBeats: 1, velocity: 80 },
-              { id: crypto.randomUUID(), pitch: 62, startBeat: 1, durationBeats: 1, velocity: 80 },
-              { id: crypto.randomUUID(), pitch: 64, startBeat: 2, durationBeats: 1, velocity: 80 },
-              { id: crypto.randomUUID(), pitch: 65, startBeat: 3, durationBeats: 1, velocity: 80 },
+              { id: crypto.randomUUID(), pitch: 48, startBeat: 0, durationBeats: 1, velocity: 95 },
+              { id: crypto.randomUUID(), pitch: 50, startBeat: 1, durationBeats: 1, velocity: 88 },
+              { id: crypto.randomUUID(), pitch: 52, startBeat: 2, durationBeats: 1, velocity: 92 },
+              { id: crypto.randomUUID(), pitch: 55, startBeat: 3, durationBeats: 1, velocity: 90 },
             ],
           },
         ],

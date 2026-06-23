@@ -29,6 +29,13 @@ function scheduleAutosave(project: Project) {
   autosaveTimer = setTimeout(() => saveAutosave(project), 1500);
 }
 
+function ensureSynthBound() {
+  synthEngine.bindContext(
+    audioEngine.getSharedContext(),
+    audioEngine.getMasterGainNode(),
+  );
+}
+
 async function resolveClipAudioId(storagePath: string): Promise<string> {
   if (storagePath.startsWith('local:')) return storagePath.slice(6);
   if (storagePath.startsWith('demo:')) return storagePath;
@@ -244,6 +251,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     }
 
     // MIDI reschedule on refresh
+    ensureSynthBound();
     const psb = audioEngine.getPlayStartBeat?.() ?? get().currentBeat;
     const pst = audioEngine.getPlayStartTime?.() ?? 0;
     synthEngine.stopAll();
@@ -351,6 +359,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         }
 
         // Schedule MIDI notes from instrument/midi tracks
+        ensureSynthBound();
         const playStartBeat = audioEngine.getPlayStartBeat?.() ?? get().currentBeat;
         const playStartTime = audioEngine.getPlayStartTime?.() ?? 0;
         synthEngine.setTempo(st.project.tempo);
@@ -422,7 +431,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
       // Prepare channel strip immediately (lazy safe)
       audioEngine.ensureChannel?.(newTrack.id);
-      audioEngine.rebuildTrackInserts?.(newTrack.id, []);
+      audioEngine.rebuildTrackInserts?.(newTrack.id, newTrack.inserts || []);
     },
 
     removeTrack: (trackId) => {
@@ -789,6 +798,8 @@ export const useProjectStore = create<ProjectState>((set, get) => {
 
     loadSimpleDrumBeat: () => {
       get().pushHistory();
+      set({ currentBeat: 0 });
+      audioEngine.ensureDemoSounds?.();
       get().seedDemoAssets();
 
       // Create or reuse drum tracks
@@ -841,57 +852,114 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       const hatA = findAsset('hat') || assets.find(a => a.storagePath === 'demo:hihat');
       const crashA = findAsset('crash') || assets.find(a => a.storagePath === 'demo:crash');
 
-      const beat = get().currentBeat;
-      const add = (trackId: string, asset: any, start: number) => {
+      const clipsToAdd: Array<{ trackId: string; clip: AudioClip }> = [];
+      const add = (trackId: string, asset: Asset, start: number) => {
         if (!asset || !trackId) return;
         const durBeats = (asset.duration * get().project.tempo) / 60;
-        const clip: AudioClip = {
-          id: crypto.randomUUID(),
-          storagePath: asset.storagePath,
-          startBeat: Math.max(0, beat + start),
-          durationBeats: Math.max(0.25, durBeats * 0.95),
-          offsetBeats: 0,
-          fadeInMs: 5, fadeOutMs: 60, fadeInCurve: 'linear', fadeOutCurve: 'exp'
-        };
-        set((s) => ({
-          project: {
-            ...s.project,
-            tracks: s.project.tracks.map(t => t.id === trackId ? { ...t, audioClips: [...(t.audioClips || []), clip] } : t)
-          }
-        }));
+        clipsToAdd.push({
+          trackId,
+          clip: {
+            id: crypto.randomUUID(),
+            storagePath: asset.storagePath,
+            startBeat: start,
+            durationBeats: Math.max(0.25, durBeats * 0.95),
+            offsetBeats: 0,
+            fadeInMs: 5,
+            fadeOutMs: 60,
+            fadeInCurve: 'linear',
+            fadeOutCurve: 'exp',
+          },
+        });
       };
 
-      // Groove
-      if (kickTrack && kickA) { add(kickTrack.id, kickA, 0); add(kickTrack.id, kickA, 2); add(kickTrack.id, kickA, 4); add(kickTrack.id, kickA, 5.75); }
-      if (snareTrack && snareA) { add(snareTrack.id, snareA, 2); add(snareTrack.id, snareA, 6); }
+      // 8-beat groove from beat 0
+      if (kickTrack && kickA) {
+        add(kickTrack.id, kickA, 0);
+        add(kickTrack.id, kickA, 2);
+        add(kickTrack.id, kickA, 4);
+        add(kickTrack.id, kickA, 6);
+      }
+      if (snareTrack && snareA) {
+        add(snareTrack.id, snareA, 2);
+        add(snareTrack.id, snareA, 6);
+      }
       if (hatTrack && hatA) {
         for (let i = 0; i < 16; i++) {
           add(hatTrack.id, hatA, i * 0.5);
         }
       }
-      if (crashTrack && crashA) { add(crashTrack.id, crashA, 0); }
+      if (crashTrack && crashA) {
+        add(crashTrack.id, crashA, 0);
+      }
 
+      if (clipsToAdd.length) {
+        set((s) => {
+          const byTrack = new Map<string, AudioClip[]>();
+          for (const { trackId, clip } of clipsToAdd) {
+            byTrack.set(trackId, [...(byTrack.get(trackId) || []), clip]);
+          }
+          return {
+            project: {
+              ...s.project,
+              tracks: s.project.tracks.map(t =>
+                byTrack.has(t.id)
+                  ? { ...t, audioClips: [...(t.audioClips || []), ...(byTrack.get(t.id) || [])] }
+                  : t
+              ),
+            },
+          };
+        });
+      }
 
-
-      // Also ensure an instrument track with a short MIDI phrase for piano roll demo
+      // Bassline instrument track with full 8-beat MIDI phrase
       let inst = get().project.tracks.find(t => t.type === 'instrument' || t.type === 'midi');
       if (!inst) {
         get().addTrackOfType('instrument', 'Bassline');
         inst = get().project.tracks.find(t => t.type === 'instrument');
       }
       if (inst) {
-        const ph = Math.floor(get().currentBeat);
-        get().addMidiClip(inst.id, ph, 8);
-        const clips = get().project.tracks.find(t => t.id === inst!.id)?.midiClips || [];
-        const last = clips[clips.length-1];
-        if (last) {
-          // add a few notes
-          get().addNote(last.id, 36, 0, 0.75, 100);
-          get().addNote(last.id, 43, 2, 0.5, 85);
-          get().addNote(last.id, 48, 4, 1.25, 95);
-        }
-
+        const bassNotes = [
+          { pitch: 36, start: 0, dur: 0.9, vel: 105 },
+          { pitch: 36, start: 2, dur: 0.9, vel: 95 },
+          { pitch: 43, start: 4, dur: 0.9, vel: 100 },
+          { pitch: 48, start: 6, dur: 1.5, vel: 110 },
+        ];
+        const midiClip: MidiClip = {
+          id: crypto.randomUUID(),
+          startBeat: 0,
+          durationBeats: 8,
+          notes: bassNotes.map((n) => ({
+            id: crypto.randomUUID(),
+            pitch: n.pitch,
+            startBeat: n.start,
+            durationBeats: n.dur,
+            velocity: n.vel,
+          })),
+        };
+        set((s) => ({
+          project: {
+            ...s.project,
+            tracks: s.project.tracks.map(t =>
+              t.id === inst!.id
+                ? {
+                    ...t,
+                    name: t.name.includes('Bass') ? t.name : 'Bassline',
+                    gain: 0.88,
+                    inserts: t.inserts?.length ? t.inserts : [
+                      { id: crypto.randomUUID(), type: 'eq3band', params: { lowGain: 2, midGain: 0.5, highGain: -2 }, bypass: false },
+                      { id: crypto.randomUUID(), type: 'drive', params: { amount: 1.6 }, bypass: false },
+                    ],
+                    midiClips: [midiClip],
+                  }
+                : t
+            ),
+          },
+        }));
+        audioEngine.ensureChannel?.(inst.id);
+        audioEngine.rebuildTrackInserts?.(inst.id, get().project.tracks.find(t => t.id === inst!.id)?.inserts || []);
       }
+
+      scheduleAutosave(get().project);
     },
 
     newProject: () => {
@@ -1652,6 +1720,9 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           }
 
           // Reschedule MIDI
+          ensureSynthBound();
+          synthEngine.setTempo(project.tempo);
+          synthEngine.stopAll();
           const psb2 = audioEngine.getPlayStartBeat?.() ?? clamped;
           const pst2 = audioEngine.getPlayStartTime?.() ?? 0;
           project.tracks.forEach((track) => {

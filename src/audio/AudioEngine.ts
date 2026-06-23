@@ -64,6 +64,15 @@ export class AudioEngine {
     // AudioContext는 사용자 제스처(버튼 클릭) 이후에 생성해야 함
   }
 
+  /** Shared AudioContext for SynthEngine and other subsystems */
+  getSharedContext(): AudioContext {
+    return this.getContext();
+  }
+
+  getMasterGainNode(): GainNode | null {
+    return this.masterGain;
+  }
+
   private getContext(): AudioContext {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();

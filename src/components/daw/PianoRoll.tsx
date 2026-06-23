@@ -2,6 +2,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useProjectStore } from '../../stores/useProjectStore';
 import type { MidiNote } from '../../lib/types';
 import { synthEngine } from '../../audio/SynthEngine';
+import { audioEngine } from '../../audio/AudioEngine';
+
+function previewNote(pitch: number, velocity: number, duration: number) {
+  synthEngine.bindContext(audioEngine.getSharedContext(), audioEngine.getMasterGainNode());
+  if (audioEngine.getSharedContext().state === 'suspended') {
+    audioEngine.getSharedContext().resume().catch(() => {});
+  }
+  synthEngine.playPreview(pitch, velocity, duration);
+}
 
 interface PianoRollProps {
   clipId: string;
@@ -248,11 +257,11 @@ export function PianoRoll({ clipId, onClose }: PianoRollProps) {
                 style={{ height: KEY_HEIGHT, fontSize: 9 }}
                 onMouseDown={(e) => {
                   e.stopPropagation();
-                  synthEngine.playPreview(pitch, 95, 0.6);
+                  previewNote(pitch, 95, 0.6);
                 }}
                 onMouseEnter={(e) => {
                   if (e.buttons & 1) {
-                    synthEngine.playPreview(pitch, 90, 0.5);
+                    previewNote(pitch, 90, 0.5);
                   }
                 }}
                 title={`Play ${name}`}
