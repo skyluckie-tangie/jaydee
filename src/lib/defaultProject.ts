@@ -1,4 +1,136 @@
-import type { Project } from './types';
+import type { Project, AudioClip, Asset } from './types';
+
+/** Demo samples available in AudioEngine.ensureDemoSounds */
+export const DEFAULT_DEMO_ASSETS: Asset[] = [
+  { id: 'd-kick', name: 'Kick', storagePath: 'demo:kick', duration: 0.65 },
+  { id: 'd-snare', name: 'Snare', storagePath: 'demo:snare', duration: 0.55 },
+  { id: 'd-hihat', name: 'Closed Hat', storagePath: 'demo:hihat', duration: 0.28 },
+  { id: 'd-crash', name: 'Crash', storagePath: 'demo:crash', duration: 1.6 },
+];
+
+const TEMPO = 120;
+
+function clipBeats(durationSec: number, tempo = TEMPO): number {
+  return Math.max(0.25, (durationSec * tempo) / 60 * 0.95);
+}
+
+function demoClip(storagePath: string, startBeat: number, durationSec: number): AudioClip {
+  return {
+    id: crypto.randomUUID(),
+    storagePath,
+    startBeat,
+    durationBeats: clipBeats(durationSec),
+    offsetBeats: 0,
+    fadeInMs: 5,
+    fadeOutMs: 60,
+    fadeInCurve: 'linear',
+    fadeOutCurve: 'exp',
+  };
+}
+
+/** Ready-to-play 8-beat groove — default for first visit / deploy */
+export function createStarterBeatProject(): Project {
+  const kickId = crypto.randomUUID();
+  const snareId = crypto.randomUUID();
+  const hatId = crypto.randomUUID();
+  const crashId = crypto.randomUUID();
+  const bassId = crypto.randomUUID();
+  const midiClipId = crypto.randomUUID();
+
+  const kickClips = [0, 2, 4, 6].map((b) => demoClip('demo:kick', b, 0.65));
+  const snareClips = [2, 6].map((b) => demoClip('demo:snare', b, 0.55));
+  const hatClips = Array.from({ length: 16 }, (_, i) => demoClip('demo:hihat', i * 0.5, 0.28));
+  const crashClips = [demoClip('demo:crash', 0, 1.6)];
+
+  return {
+    id: crypto.randomUUID(),
+    name: 'Starter Beat',
+    tempo: TEMPO,
+    timeSignature: [4, 4],
+    tracks: [
+      {
+        id: kickId,
+        type: 'audio',
+        name: 'Kick',
+        gain: 0.92,
+        pan: 0,
+        muted: false,
+        soloed: false,
+        automationWrite: false,
+        inserts: [],
+        audioClips: kickClips,
+      },
+      {
+        id: snareId,
+        type: 'audio',
+        name: 'Snare',
+        gain: 0.88,
+        pan: 0,
+        muted: false,
+        soloed: false,
+        automationWrite: false,
+        inserts: [],
+        audioClips: snareClips,
+      },
+      {
+        id: hatId,
+        type: 'audio',
+        name: 'Closed Hat',
+        gain: 0.72,
+        pan: 0.12,
+        muted: false,
+        soloed: false,
+        automationWrite: false,
+        inserts: [],
+        audioClips: hatClips,
+      },
+      {
+        id: crashId,
+        type: 'audio',
+        name: 'Crash',
+        gain: 0.7,
+        pan: 0,
+        muted: false,
+        soloed: false,
+        automationWrite: false,
+        inserts: [],
+        audioClips: crashClips,
+      },
+      {
+        id: bassId,
+        type: 'instrument',
+        name: 'Bassline',
+        gain: 0.88,
+        pan: -0.05,
+        muted: false,
+        soloed: false,
+        automationWrite: false,
+        inserts: [
+          { id: 'bass-eq', type: 'eq3band', params: { lowGain: 2, midGain: 0.5, highGain: -2 }, bypass: false },
+          { id: 'bass-drive', type: 'drive', params: { amount: 1.6 }, bypass: false },
+        ],
+        audioClips: [],
+        midiClips: [
+          {
+            id: midiClipId,
+            startBeat: 0,
+            durationBeats: 8,
+            notes: [
+              { id: crypto.randomUUID(), pitch: 36, startBeat: 0, durationBeats: 0.9, velocity: 105 },
+              { id: crypto.randomUUID(), pitch: 36, startBeat: 2, durationBeats: 0.9, velocity: 95 },
+              { id: crypto.randomUUID(), pitch: 43, startBeat: 4, durationBeats: 0.9, velocity: 100 },
+              { id: crypto.randomUUID(), pitch: 48, startBeat: 6, durationBeats: 1.5, velocity: 110 },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export function projectHasAudioClips(project: Project): boolean {
+  return project.tracks.some((t) => (t.audioClips?.length ?? 0) > 0);
+}
 
 /** Clean starter project — no demo clips */
 export function createEmptyProject(name = 'Untitled'): Project {

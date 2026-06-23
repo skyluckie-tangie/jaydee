@@ -2,7 +2,13 @@ import { create } from 'zustand';
 import type { Project, Track, AudioClip, MidiClip, MidiNote, PluginInstance, TrackType, Asset } from '../lib/types';
 import { audioEngine } from '../audio/AudioEngine';
 import { synthEngine } from '../audio/SynthEngine';
-import { createEmptyProject, createDemoProject } from '../lib/defaultProject';
+import {
+  createEmptyProject,
+  createDemoProject,
+  createStarterBeatProject,
+  DEFAULT_DEMO_ASSETS,
+  projectHasAudioClips,
+} from '../lib/defaultProject';
 import { saveProject, loadProject, saveAutosave, uploadAudioAsset, isSupabaseConfigured } from '../lib/projectService';
 import { exportAndDownload } from '../audio/ExportEngine';
 import { broadcastClipMove, subscribeToProject } from '../lib/realtimeSync';
@@ -15,11 +21,23 @@ function loadProjectLocalSafe(): Project {
     const raw = localStorage.getItem('jaydee:project') || localStorage.getItem('jaydee:autosave');
     if (raw) {
       const parsed = JSON.parse(raw);
-      return (parsed.project ?? parsed) as Project;
+      const project = (parsed.project ?? parsed) as Project;
+      // Upgrade old empty saves (deploy visitors who only had MIDI, no drums)
+      if (projectHasAudioClips(project)) return project;
     }
-  } catch { /* use empty */ }
-  return createEmptyProject();
+  } catch { /* fall through */ }
+  return createStarterBeatProject();
 }
+
+function bootstrapAudioForProject(project: Project) {
+  audioEngine.ensureDemoSounds?.();
+  project.tracks.forEach((t) => {
+    audioEngine.ensureChannel?.(t.id);
+    audioEngine.rebuildTrackInserts?.(t.id, t.inserts || []);
+  });
+}
+
+bootstrapAudioForProject(initialProject);
 
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 let realtimeUnsub: (() => void) | null = null;
@@ -281,7 +299,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     isQuantizeOn: true,
     toggleQuantize: () => set((state) => ({ isQuantizeOn: !state.isQuantizeOn })),
 
-    assets: [],
+    assets: [...DEFAULT_DEMO_ASSETS],
 
     metronomeEnabled: false,
     toggleMetronome: () => {
@@ -783,13 +801,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     seedDemoAssets: () => {
       audioEngine.ensureDemoSounds?.();
       const current = get().assets;
-      const wanted = [
-        { id: 'd-kick', name: 'Kick', storagePath: 'demo:kick', duration: 0.65 },
-        { id: 'd-snare', name: 'Snare', storagePath: 'demo:snare', duration: 0.55 },
-        { id: 'd-hihat', name: 'Closed Hat', storagePath: 'demo:hihat', duration: 0.28 },
-        { id: 'd-crash', name: 'Crash', storagePath: 'demo:crash', duration: 1.6 },
-      ];
-      const toAdd = wanted.filter(w => !current.some(a => a.storagePath === w.storagePath));
+      const toAdd = DEFAULT_DEMO_ASSETS.filter(w => !current.some(a => a.storagePath === w.storagePath));
       if (toAdd.length > 0) {
         set((state) => ({ assets: [...state.assets, ...toAdd] }));
 

@@ -47,13 +47,10 @@ function App() {
     return null;
   })
 
-  // Auto seed some drum samples into Asset Pool on first load
+  // Ensure demo audio buffers are generated (clips already on timeline for first visit)
   useEffect(() => {
-    const t = setTimeout(() => {
-      const st = useProjectStore.getState();
-      if ((st.assets || []).length < 3) st.seedDemoAssets();
-    }, 650);
-    return () => clearTimeout(t);
+    audioEngine.ensureDemoSounds?.();
+    useProjectStore.getState().seedDemoAssets();
   }, []);
 
   // Resume AudioContext on first user gesture (fixes "not allowed to start" autoplay policy)
