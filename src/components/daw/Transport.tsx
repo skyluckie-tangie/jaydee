@@ -20,7 +20,9 @@ export function Transport() {
     quantize,
     setQuantize,
     isQuantizeOn,
-    toggleQuantize
+    toggleQuantize,
+    loopEnabled,
+    toggleLoop
   } = useProjectStore()
 
   // Local input value so user can type freely (e.g. delete digits)
@@ -121,6 +123,21 @@ export function Transport() {
             <option value={1/4}>1/4</option>
             <option value={1/2}>1/2</option>
           </select>
+        </div>
+
+        {/* Loop toggle - L key or button */}
+        <div className="flex items-center gap-1 text-[10px] ml-2">
+          <button
+            onClick={toggleLoop}
+            className={`px-1.5 py-px text-[10px] font-mono border rounded cursor-pointer select-none transition-all active:scale-95
+              ${loopEnabled 
+                ? 'text-yellow-400 border-yellow-400 bg-yellow-400/10' 
+                : 'text-text-muted border-border bg-bg-elevated'
+              }`}
+            title="Loop region ON/OFF (L 키)"
+          >
+            L
+          </button>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Project, Track, AudioClip, MidiClip, MidiNote, PluginInstance } from '../lib/types';
+import type { Project, Track, AudioClip, MidiClip, MidiNote, PluginInstance, TrackType } from '../lib/types';
 import { audioEngine } from '../audio/AudioEngine';
 import { synthEngine } from '../audio/SynthEngine';
 
@@ -110,6 +110,8 @@ interface ProjectState {
   reorderInsert: (trackId: string, fromIndex: number, toIndex: number) => void;
   loadDemoMixChain: () => void;
   setMasterGain: (gain: number) => void;
+  setTrackGain: (trackId: string, gain: number) => void;
+  setTrackPan: (trackId: string, pan: number) => void;
 
   // Metering (polled from UI)
   getTrackMeter: (trackId: string) => { peak: number; rms: number };
@@ -141,6 +143,13 @@ interface ProjectState {
   pasteClips: (targetBeat?: number | null) => void;
   duplicateSelectedClips: (skipHistory?: boolean) => void;
 
+  // Loop Region (for transport loop and region highlight)
+  loopEnabled: boolean;
+  loopStart: number;
+  loopEnd: number;
+  toggleLoop: () => void;
+  setLoopRegion: (start: number, end: number) => void;
+
   // Internal helpers
   setCurrentBeat: (beat: number) => void;
   refreshPlayback: () => void;
@@ -153,7 +162,24 @@ interface ProjectState {
 
 export const useProjectStore = create<ProjectState>((set, get) => {
   audioEngine.subscribeToPosition((beat) => {
-    set({ currentBeat: Math.max(0, beat) });
+    let nextBeat = Math.max(0, beat);
+    const { loopEnabled, loopStart, loopEnd, isPlaying } = get();
+
+    if (loopEnabled && loopEnd > loopStart && isPlaying && nextBeat >= loopEnd) {
+      // Loop back
+      nextBeat = loopStart;
+      // To make it seamless, we may need to reschedule, but for now jump position
+      // The audio scheduling will need refresh if we want perfect loop, but basic jump first.
+      audioEngine.stop();
+      audioEngine.play(nextBeat).then(() => {
+        // re-schedule current clips after loop jump
+        get().refreshPlayback();
+      });
+      set({ currentBeat: nextBeat, isPlaying: true });
+      return;
+    }
+
+    set({ currentBeat: nextBeat });
   });
 
   const getEffectiveGain = (track: Track): number => {
@@ -223,6 +249,17 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     isQuantizeOn: true,
     toggleQuantize: () => set((state) => ({ isQuantizeOn: !state.isQuantizeOn })),
 
+    // Loop region (for loop playback and region highlight in arrange)
+    loopEnabled: false,
+    loopStart: 0,
+    loopEnd: 4,
+    toggleLoop: () => set((state) => ({ loopEnabled: !state.loopEnabled })),
+    setLoopRegion: (start, end) => {
+      const s = Math.max(0, Math.min(start, end));
+      const e = Math.max(0, Math.max(start, end));
+      set({ loopStart: s, loopEnd: e });
+    },
+
     setTempo: (bpm) => {
       const clamped = Math.max(40, Math.min(300, bpm));
       set((state) => ({
@@ -233,14 +270,21 @@ export const useProjectStore = create<ProjectState>((set, get) => {
     },
 
     togglePlay: async () => {
-      const { isPlaying, currentBeat, project } = get();
+      const st = get();
+      let startBeat = st.currentBeat;
 
-      if (!isPlaying) {
-        await audioEngine.play(currentBeat);
-        set({ isPlaying: true });
+      if (st.loopEnabled && st.loopEnd > st.loopStart) {
+        if (startBeat < st.loopStart || startBeat >= st.loopEnd) {
+          startBeat = st.loopStart;
+        }
+      }
+
+      if (!st.isPlaying) {
+        await audioEngine.play(startBeat);
+        set({ isPlaying: true, currentBeat: startBeat });
 
         // Prepare signal chain for all tracks (channel strips + master bus)
-        project.tracks.forEach(t => {
+        st.project.tracks.forEach(t => {
           audioEngine.ensureChannel?.(t.id);
           audioEngine.rebuildTrackInserts?.(t.id, t.inserts || []);
           // Apply current mix state
@@ -250,7 +294,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         });
 
         // Schedule audio clips
-        project.tracks.forEach((track) => {
+        st.project.tracks.forEach((track) => {
           if (track.type !== 'audio' || !track.audioClips) return;
           const eff = getEffectiveGain(track);
           track.audioClips.forEach((clip) => {
@@ -269,7 +313,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         synthEngine.setTempo(project.tempo);
         synthEngine.stopAll();
 
-        project.tracks.forEach((track) => {
+        st.project.tracks.forEach((track) => {
           if (!track.midiClips) return;
           const target = audioEngine.getTrackInput?.(track.id) || undefined;
           track.midiClips.forEach((clip) => {
@@ -501,9 +545,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
           newInserts.push({ id: crypto.randomUUID(), type: 'eq3band', params: { lowGain: 1, midGain: 2, highGain: -1 } });
           newInserts.push({ id: crypto.randomUUID(), type: 'compressor', params: { threshold: -22, ratio: 3.5, attack: 0.002, release: 0.15 } });
         }
-        // Update directly
-        const updatedTracks = get().project.tracks.map(t => t.id === track.id ? { ...t, inserts: newInserts } : t);
-        // We need to set, but to avoid multiple sets, do in one go outside loop ideally. For demo ok.
+        // (actual update happens via demoTracks set below)
       });
 
       // Better: set once
@@ -829,8 +871,8 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       }
       const newSelected: string[] = [];
       const updatedTracks = st.project.tracks.map(track => {
-        let audioCopies = [];
-        let midiCopies = [];
+        let audioCopies: any[] = [];
+        let midiCopies: any[] = [];
         st.selectedClipIds.forEach(id => {
           const aClip = (track.audioClips || []).find(c => c.id === id);
           if (aClip) {
@@ -860,58 +902,6 @@ export const useProjectStore = create<ProjectState>((set, get) => {
       if (st.isPlaying) {
         st.refreshPlayback();
       }
-    },
-
-    setTrackGain: (trackId, gain) => {
-      audioEngine.updateTrackGain(trackId, gain);
-      set((state) => {
-        const tracks = state.project.tracks.map(t =>
-          t.id === trackId ? { ...t, gain } : t
-        );
-        return { project: { ...state.project, tracks } };
-      });
-    },
-
-    setTrackPan: (trackId, pan) => {
-      audioEngine.updateTrackPan(trackId, pan);
-      set((state) => {
-        const tracks = state.project.tracks.map(t =>
-          t.id === trackId ? { ...t, pan } : t
-        );
-        return { project: { ...state.project, tracks } };
-      });
-    },
-
-    resizeClip: (trackId, clipId, newStartBeat, newDurationBeats, newOffsetBeats) => {
-      get().pushHistory();
-
-      const quant = get().isQuantizeOn ? get().quantize : 0;
-      let snappedStart = newStartBeat;
-      if (quant > 0) {
-        snappedStart = Math.max(0, Math.round(newStartBeat / quant) * quant);
-      }
-      const snappedDur = Math.max(0.1, newDurationBeats);
-
-      set((state) => {
-        const tracks = state.project.tracks.map((track) => {
-          if (track.id !== trackId || !track.audioClips) return track;
-          return {
-            ...track,
-            audioClips: track.audioClips.map((clip) => {
-              if (clip.id !== clipId) return clip;
-              return {
-                ...clip,
-                startBeat: snappedStart,
-                durationBeats: snappedDur,
-                offsetBeats: newOffsetBeats !== undefined ? Math.max(0, newOffsetBeats) : clip.offsetBeats,
-              };
-            }),
-          };
-        });
-        return { project: { ...state.project, tracks } };
-      });
-
-      get().refreshPlayback();
     },
 
     // === MIDI Support (Phase 3) ===  // Skipped in this session (parallel)

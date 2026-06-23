@@ -6,6 +6,8 @@
 // - 클립 스케줄링 및 재생/정지
 // - 현재 beat 위치 업데이트 (requestAnimationFrame)
 
+import type { PluginInstance } from '../lib/types';
+
 export interface LoadedAudio {
   id: string;
   name: string;
@@ -345,21 +347,19 @@ export class AudioEngine {
       return comp;
     }
 
+    if (t === 'filter') {
+      const f = ctx.createBiquadFilter();
+      f.type = ((p as any).type as BiquadFilterType) || 'lowpass';
+      f.frequency.value = (p as any).frequency ?? 1000;
+      f.Q.value = (p as any).q ?? 1;
+      return f;
+    }
+
     // Unknown plugin type — passthrough gain
     const g = ctx.createGain();
     g.gain.value = 1;
     return g;
   }
-
-  // Bonus: simple filter insert for variety
-  if (t === 'filter') {
-    const f = ctx.createBiquadFilter();
-    f.type = (p.type as BiquadFilterType) || 'lowpass';
-    f.frequency.value = p.frequency ?? 1000;
-    f.Q.value = p.q ?? 1;
-    return f;
-  }
-}
 
   /** Live parameter updates (no rebuild needed) */
   setTrackFader(trackId: string, gain: number) {

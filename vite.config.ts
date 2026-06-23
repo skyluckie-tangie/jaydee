@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react'
 function jaydeeServerMessage() {
   return {
     name: 'jaydee-server-message',
-    configureServer(server) {
+    configureServer(server: any) {
       // 기본 Vite URL 출력은 우리가 직접 출력할 거라서 막음
       server.printUrls = () => {}
 

@@ -24,7 +24,12 @@ function App() {
     toggleClipSelection,
     clearSelection,
     quantize,
-    isQuantizeOn
+    isQuantizeOn,
+    loopEnabled,
+    loopStart,
+    loopEnd,
+    setLoopRegion,
+    toggleLoop
   } = useProjectStore()
 
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -92,9 +97,11 @@ function App() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !audioTrack) return
+    // Pick first audio track as target (simple fallback)
+    const targetTrack = project.tracks.find(t => t.type === 'audio')
+    if (!file || !targetTrack) return
 
-    await addAudioClip(audioTrack.id, file)
+    await addAudioClip(targetTrack.id, file)
     // input 리셋
     e.target.value = ''
   }
@@ -111,6 +118,7 @@ function App() {
   // - Escape: deselect
   // - H: zoom in (centered on playhead)
   // - G: zoom out (centered on playhead)
+  // - L: toggle loop on/off (loop region)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === ' ' || e.key === 'Spacebar') {
@@ -175,6 +183,9 @@ function App() {
         } else if (!inInput && key === 'g') {
           e.preventDefault();
           zoomTimeline(1 / 1.2);
+        } else if (!inInput && key === 'l') {
+          e.preventDefault();
+          toggleLoop();
         }
       }
     }
@@ -225,7 +236,7 @@ function App() {
           initialPositions[sid] = { trackId: tr.id, startBeat: cl.startBeat };
           return;
         }
-        cl = (tr.midiClips || []).find(c => c.id === sid);
+        cl = (tr.audioClips || []).find(c => c.id === sid);
         if (cl) {
           initialPositions[sid] = { trackId: tr.id, startBeat: cl.startBeat };
         }
@@ -260,7 +271,7 @@ function App() {
               initialPositions[sid] = { trackId: tr.id, startBeat: cl.startBeat };
               return;
             }
-            cl = (tr.midiClips || []).find(c => c.id === sid);
+            cl = (tr.audioClips || []).find(c => c.id === sid);
             if (cl) {
               initialPositions[sid] = { trackId: tr.id, startBeat: cl.startBeat };
             }
@@ -338,6 +349,44 @@ function App() {
 
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+  };
+
+  // Loop region drag in the thin top bar (like Cubase marker/loop bar)
+  // Drag defines start -> end. Always uses current quantize.
+  const handleLoopRegionDragStart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const bar = e.currentTarget as HTMLElement;
+    const rect = bar.getBoundingClientRect();
+
+    const getSnappedBeat = (clientX: number) => {
+      const x = clientX - rect.left;
+      const beat = Math.max(0, x / beatWidth);
+      const q = (quantize && quantize > 0) ? quantize : 0.25;
+      return Math.round(beat / q) * q;
+    };
+
+    let startBeat = getSnappedBeat(e.clientX);
+    let endBeat = startBeat;
+
+    setLoopRegion(startBeat, endBeat);
+    if (!loopEnabled) {
+      toggleLoop();
+    }
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const current = getSnappedBeat(moveEvent.clientX);
+      const newStart = Math.min(startBeat, current);
+      const newEnd = Math.max(startBeat, current);
+      setLoopRegion(newStart, newEnd);
+    };
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp, { once: true });
   };
 
   // Playhead scrubbing - always uses the ruler for coordinate reference
@@ -454,6 +503,47 @@ function App() {
           <div className="flex-1 bg-[#1f2937]" />
         </div>
 
+        {/* Loop Region Bar (top thin bar like marker track)
+            Drag here to define loop region. Highlights arrange area below. */}
+        <div
+          className="loop-region-bar"
+          onMouseDown={handleLoopRegionDragStart}
+          title="Drag to set Loop Region (L to toggle loop)"
+        >
+          {/* Visual representation of current loop in the bar */}
+          {loopEnabled && loopEnd > loopStart && (
+            <div
+              style={{
+                position: 'absolute',
+                left: `${loopStart * beatWidth}px`,
+                width: `${(loopEnd - loopStart) * beatWidth}px`,
+                top: '2px',
+                height: '14px',
+                background: 'rgba(250, 204, 21, 0.35)',
+                border: '1px solid rgba(250, 204, 21, 0.7)',
+                borderRadius: '1px',
+                pointerEvents: 'none'
+              }}
+            />
+          )}
+          {/* Playhead indicator in the loop bar (extends the arrow concept) */}
+          <div
+            className="playhead-handle"
+            style={{
+              left: `${currentBeat * beatWidth + 4}px`,
+              top: '-1px',
+              height: '20px',
+              width: '6px',
+              background: '#f87171',
+              borderRadius: '0 0 3px 3px',
+              pointerEvents: 'none',
+              zIndex: 50
+            }}
+          />
+          {/* Small label */}
+          <div className="absolute left-1 top-0 text-[9px] text-yellow-400/70 pointer-events-none">LOOP</div>
+        </div>
+
         {/* Ruler - supports click and drag to scrub playhead.
             The small triangle at the exact playhead x is the "marker" you can click to move. */}
         <div 
@@ -506,6 +596,18 @@ function App() {
           }}
         >
           <div className="timeline-grid" />
+
+          {/* Loop region highlight overlay (yellow, high transparency) in arrange area.
+              This is the visual "loop region" highlight across the track backgrounds. */}
+          {loopEnabled && loopEnd > loopStart && (
+            <div
+              className="loop-highlight"
+              style={{
+                left: `${loopStart * beatWidth}px`,
+                width: `${(loopEnd - loopStart) * beatWidth}px`,
+              }}
+            />
+          )}
 
           {/* Quantize subdivision lines (visible when Q on) - denser for smaller quantize */}
           {isQuantizeOn && quantize > 0 && (

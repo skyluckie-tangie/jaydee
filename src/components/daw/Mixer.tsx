@@ -67,7 +67,6 @@ export function Mixer({ open, onClose }: MixerProps) {
     removeInsert, 
     setMasterGain,
     updateTrack,
-    reorderInsert,
     loadDemoMixChain
   } = useProjectStore()
 

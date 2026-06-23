@@ -884,6 +884,29 @@ canvas.daw-canvas {
   pointer-events: auto;
 }
 
+/* Loop region bar (thin top bar for defining loop/region selection) */
+.loop-region-bar {
+  height: 18px;
+  background: #1e2937;
+  border-bottom: 1px solid #334155;
+  position: relative;
+  flex-shrink: 0;
+  z-index: 40;
+  cursor: crosshair;
+}
+
+/* The yellow highlight in arrange area for active loop region */
+.loop-highlight {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(250, 204, 21, 0.18); /* light high-transparency yellow */
+  border-left: 1px solid rgba(250, 204, 21, 0.6);
+  border-right: 1px solid rgba(250, 204, 21, 0.6);
+  pointer-events: none;
+  z-index: 3;
+}
+
 /* Piano Roll styles */
 .piano-roll-container {
   font-size: 11px;
@@ -900,4 +923,45 @@ canvas.daw-canvas {
   font-family: ui-monospace, monospace;
   padding-left: 3px;
   user-select: none;
+}
+
+/* ============================================================
+   ABSOLUTE RULE (DO NOT REMOVE): 
+   NO TEXT SELECTION OR TEXT DRAGGING ANYWHERE IN THE DAW UI.
+   This MUST be enforced globally because:
+   - Dragging clips, regions, or doing box/loop selection will otherwise
+     select underlying text/labels and make the app unusable ("지랄남").
+   - Applies to ALL elements by default.
+   - Future plugins, custom panels, or dynamically injected DOM will
+     automatically inherit this unless they explicitly override with
+     user-select: text (only for actual form inputs).
+   Place all global UI rules here so plugins respect it too.
+   ============================================================ */
+html, body, #root,
+.daw-app,
+.daw-app *,
+.timeline,
+.timeline *,
+.track-list,
+.track-list *,
+.waveform-clip,
+.midi-clip,
+.piano-roll-container,
+.piano-roll-container *,
+.transport-bar,
+.transport-bar *,
+.loop-region-bar,
+.loop-region-bar * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+}
+
+/* Only allow text selection inside actual input fields */
+.daw-app input,
+.daw-app textarea,
+.daw-app [contenteditable="true"] {
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
