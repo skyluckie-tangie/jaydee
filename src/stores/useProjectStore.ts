@@ -310,7 +310,7 @@ export const useProjectStore = create<ProjectState>((set, get) => {
         // Schedule MIDI notes from instrument/midi tracks
         const playStartBeat = audioEngine.getPlayStartBeat?.() ?? get().currentBeat;
         const playStartTime = audioEngine.getPlayStartTime?.() ?? 0;
-        synthEngine.setTempo(project.tempo);
+        synthEngine.setTempo(st.project.tempo);
         synthEngine.stopAll();
 
         st.project.tracks.forEach((track) => {
