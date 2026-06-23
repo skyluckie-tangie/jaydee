@@ -19,26 +19,32 @@ function App() {
   const [beatWidth, setBeatWidth] = useState(48); // pixels per beat, zoomable. Default was 48
   const [showMixer, setShowMixer] = useState(false)
   const [openPianoRollClipId, setOpenPianoRollClipId] = useState<string | null>(() => {
-    // Default open a piano roll on launch if possible
+    // Always ensure and return a MIDI clip ID so PianoRoll opens by default on launch
     const store = useProjectStore.getState();
-    let clipId: string | null = null;
-    for (const t of store.project.tracks) {
+    let project = store.project;
+
+    // Find existing
+    for (const t of project.tracks) {
       if (t.midiClips && t.midiClips.length > 0) {
-        clipId = t.midiClips[0].id;
-        break;
+        return t.midiClips[0].id;
       }
     }
-    if (!clipId) {
-      let track = store.project.tracks.find((t: any) => t.type === 'instrument' || t.type === 'midi');
-      if (!track) {
-        store.addTrackOfType('instrument');
-        track = store.project.tracks[store.project.tracks.length - 1];
-      }
-      store.addMidiClip(track.id, 0, 8);
-      const clips = store.project.tracks.find((t: any) => t.id === track.id)?.midiClips || [];
-      if (clips.length > 0) clipId = clips[0].id;
+
+    // No existing: find or create instrument track and add a clip
+    let track = project.tracks.find((t: any) => t.type === 'instrument' || t.type === 'midi');
+    if (!track) {
+      store.addTrackOfType('instrument');
+      project = useProjectStore.getState().project;
+      track = project.tracks[project.tracks.length - 1];
     }
-    return clipId;
+    store.addMidiClip(track.id, 0, 4);
+    project = useProjectStore.getState().project;
+    const t = project.tracks.find((tt: any) => tt.id === track.id);
+    if (t?.midiClips && t.midiClips.length > 0) {
+      return t.midiClips[0].id;
+    }
+    // Fallback, should not reach
+    return null;
   })
 
   // Auto seed some drum samples into Asset Pool on first load
@@ -83,6 +89,8 @@ function App() {
       });
     }
   }, [user?.id])
+
+
 
   const handleDragEnd = (event: any) => {
     const { active, over } = event

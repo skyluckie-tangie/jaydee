@@ -53,4 +53,37 @@ export default defineConfig({
     strictPort: false,
     open: true,          // YOLO mode: auto-open browser on start
   },
+  build: {
+    chunkSizeWarningLimit: 10000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('react') || id.includes('react-dom')) {
+              return 'react'
+            }
+            if (id.includes('framer-motion')) {
+              return 'framer'
+            }
+            if (id.includes('recharts')) {
+              return 'recharts'
+            }
+            if (id.includes('zustand')) {
+              return 'zustand'
+            }
+            if (id.includes('lucide-react')) {
+              return 'icons'
+            }
+            if (id.includes('@dnd-kit')) {
+              return 'dnd'
+            }
+            if (id.includes('@supabase')) {
+              return 'supabase'
+            }
+            return 'vendor'
+          }
+        }
+      }
+    }
+  }
 })

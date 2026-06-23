@@ -31,7 +31,19 @@ export function createEmptyProject(name = 'Untitled'): Project {
         automationWrite: false,
         inserts: [],
         audioClips: [],
-        midiClips: [],
+        midiClips: [
+          {
+            id: crypto.randomUUID(),
+            startBeat: 0,
+            durationBeats: 4,
+            notes: [
+              { id: crypto.randomUUID(), pitch: 60, startBeat: 0, durationBeats: 1, velocity: 80 },
+              { id: crypto.randomUUID(), pitch: 62, startBeat: 1, durationBeats: 1, velocity: 80 },
+              { id: crypto.randomUUID(), pitch: 64, startBeat: 2, durationBeats: 1, velocity: 80 },
+              { id: crypto.randomUUID(), pitch: 65, startBeat: 3, durationBeats: 1, velocity: 80 },
+            ],
+          },
+        ],
       },
     ],
   };
